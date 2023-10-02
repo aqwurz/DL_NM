@@ -10,6 +10,13 @@ import gym
 from NMModel import NMModel
 
 
+def reshape_obs(obs):
+    if len(obs.shape) == 1:
+        return obs.reshape(1,1,*obs.shape)
+    elif len(obs.shape) == 2:
+        return obs.reshape(1,*obs.shape)
+    return obs
+
 # Proximal Policy Optimization (PPO) Agent
 class PPOAgent:
     def __init__(self, action_dim, actor, critic, lr_actor=1e-4,
@@ -26,19 +33,21 @@ class PPOAgent:
         self.c1 = c1
         self.c2 = c2
 
-    def get_action(self, state):
-        state = tf.convert_to_tensor([state], dtype=tf.float32)
-        action = self.actor(state)
-        return np.squeeze(action, axis=0)
+    def get_action(self, obs):
+        obs = reshape_obs(obs)
+        action = self.actor(obs)
+        return tf.reshape(action, (action.shape[-1],))
 
-    def get_value(self, state):
-        state = tf.convert_to_tensor([state], dtype=tf.float32)
-        return tf.squeeze(self.critic(state), axis=0)
+    def get_value(self, obs):
+        obs = reshape_obs(obs)
+        value = self.critic(obs)
+        return tf.reshape(value, (value.shape[-1],))
 
-    def compute_loss(self, states, actions, advantages, old_probs):
+    def compute_loss(self, observations, actions, advantages, old_probs):
+        observations = reshape_obs(observations)
         with tf.GradientTape(persistent=True) as tape:
             # Actor loss
-            new_probs = self.actor(states)
+            new_probs = self.actor(observations)
             entropy = -tf.reduce_sum(
                 new_probs * tf.math.log(new_probs + 1e-10), axis=-1)
             ratio = new_probs / (old_probs + 1e-10)
@@ -52,7 +61,7 @@ class PPOAgent:
                 tf.minimum(surrogate1, surrogate2) - self.c1 * entropy)
 
             # Critic loss
-            value_pred = self.critic(states)
+            value_pred = self.critic(observations)
             critic_loss = tf.reduce_mean(tf.square(value_pred - advantages))
 
         # Compute gradients and update networks
@@ -64,13 +73,12 @@ class PPOAgent:
         self.optimizer_critic.apply_gradients(
             zip(critic_grads, self.critic.trainable_variables))
 
-    def train(self, states, actions, advantages, old_probs):
-        self.compute_loss(states, actions, advantages, old_probs)
+    def train(self, observations, actions, advantages, old_probs):
+        self.compute_loss(observations, actions, advantages, old_probs)
 
 
 # Main PPO training loop
-def train_ppo(env_name, num_episodes, max_steps, actor, critic):
-    env = gym.make(env_name)
+def train_ppo(env, num_episodes, max_steps, actor, critic):
     action_dim = env.action_space.shape[0]
     state_dim = env.observation_space.shape[0]
     agent = PPOAgent(action_dim, actor, critic)
@@ -80,23 +88,36 @@ def train_ppo(env_name, num_episodes, max_steps, actor, critic):
         done = False
         episode_reward = 0
 
-        states = []
+        observations = []
         actions = []
         rewards = []
         old_probs = []
 
         for step in range(max_steps):
-            action = agent.get_action(state)
+            if len(observations) == 0:
+                action = agent.get_action(state)
+            else:
+                action = agent.get_action(observations)
             next_state, reward, done, _, _ = env.step(action)
-            states.append(state)
+            reward = reward.reshape((1,))
+            action = action.numpy()
+            print(state)
+            print(action)
+            print(reward)
+            observation = tf.ragged.constant([state, action, reward])
+            if observations == []:
+                observations = observation
+            else:
+                observations = tf.concat([observations, observation])
             actions.append(action)
             rewards.append(reward)
-            old_probs.append(agent.actor(
-                tf.convert_to_tensor([state], dtype=tf.float32))[0])
+            old_probs.append(agent.actor(observations)[0])
             state = next_state
 
             if done:
                 break
+
+        observations.append(next_state)
 
         discounted_rewards = []
         advantage = 0
@@ -108,11 +129,11 @@ def train_ppo(env_name, num_episodes, max_steps, actor, critic):
         std = np.std(discounted_rewards)
         discounted_rewards = (discounted_rewards - mean) / (std + 1e-8)
 
-        states = np.array(states, dtype=np.float32)
+        observations = np.array(observations, dtype=np.float32)
         actions = np.array(actions, dtype=np.float32)
         old_probs = np.array(old_probs, dtype=np.float32)
 
-        agent.train(states, actions, discounted_rewards, old_probs)
+        agent.train(observations, actions, discounted_rewards, old_probs)
 
         episode_reward = sum(rewards)
         print(f"Episode: {episode + 1}, Total Reward: {episode_reward}")
@@ -123,12 +144,16 @@ if __name__ == "__main__":
     num_episodes = 500
     max_steps = 200
 
+    env = gym.make(env_name)
+
     # Replace with your custom actor network
-    custom_actor = NMModel()
-    custom_critic = NMModel()
+    action_dim = env.action_space.shape[0]
+    print(action_dim)
+    custom_actor = NMModel(action_dim)
+    custom_critic = NMModel(action_dim)
 
     train_ppo(
-        env_name,
+        env,
         num_episodes,
         max_steps,
         custom_actor,
