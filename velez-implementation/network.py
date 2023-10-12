@@ -3,6 +3,7 @@
 import numpy as np
 
 
+@np.vectorize
 def phi(x):
     return 2/(1 + np.exp(-32*x)) - 1
 
@@ -35,62 +36,23 @@ def polynomial_mutation(x, lower, upper, eta):
     return x + dq*(upper-lower)
 
 
-class Neuron():
-    def __init__(self, layer, coords):
-        self.possible_input_neurons = layer
-        self.input_neurons = layer
-        self.weights = [np.random.rand()*2-1 for _ in range(len(layer))]
-        self.bias = np.random.rand()*2-1
-        self.coords = coords
-
-    def toggle_connection(self, neuron):
-        if neuron in self.input_neurons:
-            index = self.input_neurons.index(neuron)
-            self.input_neurons.pop(index)
-            self.weights.pop(index)
-        else:
-            self.input_neurons.append(neuron)
-            self.weights.append(np.random.rand()*2-1)
-
-    def activation(self):
-        if len(self.input_neurons) == 0:
-            return 0
-        return phi(
-            sum([w*a for w, a in zip(self.weights, self.input_neurons)])
-            + self.bias)
-
-    def update_weights(self, sources, eta=0.002):
-        m = phi(sum([s.activation()*g(self.distance(s)) for s in sources]))
-        for i in range(len(self.input_neurons)):
-            self.weights[i] += eta * m * self.input_neurons[i].activation() \
-                * self.activation()
-
-    def distance(self, source):
-        return np.sqrt(sum([
-            (self.coords[i] - source.coords[i])**2
-            for i in range(len(self.coords))]))
-
-
-class InputNeuron(Neuron):
-    def __init__(self, coords):
-        self.value = 0
-        self.coords = coords
-
-    def set_value(self, value):
-        self.value = value
-
-    def activation(self):
-        return self.value
-
-
-class DiffusionSource(InputNeuron):
-    def __init__(self, x, y):
-        super().__init__(x, y)
-
-
 class Network():
+    """
+    TODO:
+    - Document this
+    - Refactor to use arrays instead of classes
+        - null connection as weight=0
+        - swap connections by swapping weights
+        - weight array: [layers, nodes, weights]
+        - bias array: [layers, nodes]
+        - coordinate array: layer_config
+        - source array: [sources]
+        - source coord array: source_config
+    - Add functionality for mutating coordinates
+    """
     def __init__(self, layer_config, source_config):
         """Creates a Network instance.
+
         Args:
             layer_config (list): A nested list of dimensionality
                 [num_layers, num_nodes, 2]. The contents are interpreted as
@@ -109,32 +71,59 @@ class Network():
                 [(0,0), (1,1)] gives rise to two diffusion sources at
                 coordinates 0,0 and 1,1.
         """
-        self.layers = []
-        self.sources = []
-        for l_c in layer_config:
-            if len(self.layers) == 0:
-                layer = [InputNeuron(n_c) for n_c in l_c]
-            else:
-                layer = [Neuron(self.layers[-1], n_c) for n_c in l_c]
-            self.layers.append(layer)
-        for s_c in source_config:
-            self.sources.append(DiffusionSource(s_c))
+        self.node_coords = layer_config
+        self.source_coords = source_config
+        self.weights = []
+        self.biases = []
+        self.activations = [np.zeros((len(layer),)) for layer in layer_config]
+        self.source_inputs = np.zeros((len(source_config),))
+        for layer in layer_config[1:]:
+            units = self.activations[0] if len(self.weights) == 0 else self.weights[-1]
+            self.weights.append(np.random.rand(len(layer), len(units))*2-1)
+            self.biases.append(np.random.rand(len(layer))*2-1)
 
-    def get_values(self, inputs, nm_inputs):
-        for i in range(len(self.layers[0])):
-            self.layers[0][i].set_value(inputs[i])
-        for i in range(len(self.sources)):
-            self.sources[i].set_value(nm_inputs[i])
-        return [n.activation() for n in self.layers[-1]]
+    def forward(self, inputs):
+        if inputs is not np.ndarray:
+            inputs = np.array(inputs)
+        self.activations[0] = inputs
+        for i in range(len(self.weights)):
+            self.activations[i+1] = phi(self.weights[i] @ self.activations[i] + self.biases[i])
+        return self.activations[-1]
 
-    def update_weights(self):
-        for layer in self.layers:
-            for n in layer:
-                n.update_weights(self.sources)
+    def update_weights(self, nm_inputs, eta=0.002):
+        if nm_inputs is not np.ndarray:
+            nm_inputs = np.array(nm_inputs)
+        self.source_inputs = nm_inputs
+        for i in range(len(self.weights)):
+            M = []
+            for j in range(len(self.weights[i])):
+                distances = []
+                coords = np.array(self.node_coords[i+1][j])
+                for source in self.source_coords:
+                    source_arr = np.array(source)
+                    distances.append(g(np.linalg.norm(source_arr-coords)))
+                distances = np.array(distances)
+                M.append(phi(self.source_inputs @ distances))
+            M = np.array(M).reshape((1, len(M)))
+            self.weights[i] += np.outer(self.activations[i+1],
+                                        self.activations[i]) * M.T * eta
+
+    def connection_cost(self):
+        return 1 - sum([
+            np.count_nonzero(w) for w in self.weights
+        ])/sum([w.size for w in self.weights])
+
+    def copy(self):
+        clone = Network(self.node_coords, self.source_coords)
+        clone.weights = [w.copy() for w in self.weights]
+        clone.biases = self.biases.copy()
+        clone.activations = [a.copy() for a in self.activations]
+        clone.source_inputs = self.source_inputs.copy()
+        return clone
 
     def mutate(self, p_toggle=0.20, p_reassign=0.15,
                p_biaschange=0.10, p_weightchange=-1):
-        """Clones the network and mutates the copy.
+        """Mutates the network.
 
         Args:
             p_toggle: The probability of toggling a connection.
@@ -151,52 +140,22 @@ class Network():
                 Defaults to -1.
 
         Returns:
-            Network: The mutated network.
+            None.
         """
-        n = sum([
-                sum([len(neu.weights) for neu in lay])
-                for lay in self.layers[1:]])
+        n = sum([np.sum(weights) for weights in self.weights])
         if p_weightchange == -1:
             p_weightchange = 2/n
-        # clone the network
-        new_network = Network([], [])
-        for layer in self.layers:
-            new_layer = []
-            for neuron in layer:
-                new_neuron = Neuron(neuron.possible_input_neurons,
-                                    neuron.coords)
-                new_neuron.bias = neuron.bias
-                new_neuron.input_neurons = neuron.input_neurons
-                new_neuron.weights = neuron.weights
-                new_layer.append(new_neuron)
-            new_network.layers.append(new_layer)
-        for source in self.sources:
-            new_source = DiffusionSource(source.coords)
-            new_source.set_value(source.value)
-            new_network.sources.append(new_source)
-        # mutate the clone
-        for layer in new_network.layers[1:]:
-            for neuron in layer:
-                for inp in neuron.possible_input_neurons:
+        for layer in self.weights:
+            for i in range(len(layer)):
+                for j in range(len(layer[i])):
                     if np.random.rand() < p_toggle:
-                        neuron.toggle_connection(inp)
-                for i in range(len(neuron.input_neurons)):
-                    if np.random.rand() < p_reassign:
-                        candidates = np.random.shuffle(
-                            neuron.possible_input_neurons.copy())
-                        c = 0
-                        swapped = False
-                        while not swapped:
-                            if candidates[c] not in neuron.input_neurons:
-                                neuron.input_neurons[i] = candidates[c]
-                                swapped = True
-                            c += 1
-                            if c == len(candidates):
-                                swapped = True
-                for i in range(len(neuron.weights)):
-                    if np.random.rand() < p_weightchange:
-                        neuron.weights[i] = polynomial_mutation(
-                            neuron.weights[i], -1, 1, 20)
+                        layer[i, j] = 0 if layer[i, j] != 0 else np.random.rand()*2-1
+                    if np.random.rand() < p_weightchange and layer[i, j] != 0:
+                        layer[i, j] = polynomial_mutation(layer[i, j], -1, 1, 20)
+                if np.random.rand() < p_reassign:
+                    indices = np.random.choice(range(len(layer[i])), 2, replace=False)
+                    layer[i, [indices[0], indices[1]]] = layer[i, [indices[1], indices[0]]]
+        for layer in self.biases:
+            for i in range(len(layer)):
                 if np.random.rand() < p_biaschange:
-                    neuron.bias = polynomial_mutation(neuron.bias, -1, 1, 20)
-        return new_network
+                    layer[i] = polynomial_mutation(layer[i], -1, 1, 20)
