@@ -218,6 +218,7 @@ def generation(R, objectives, pop_size, num_parents):
         lambda i, j: 1 if crowded_compare(i, j) else -1))
     P_new += F[i][0:(N-len(P_new))]
     Q_new = make_new_pop(P_new, pop_size)
+    [ind['network'].reset_weights() for ind in P_new+Q_new]
 
     return P_new, Q_new
 
@@ -250,9 +251,6 @@ def pnsga(trainer, objectives, pop_size=400, num_generations=20000,
     Returns:
         list: The final population.
     """
-    if outfile != None:
-        with open(outfile, 'w') as f:
-            f.write(f"{time()}\n")
     P = initialize_pop(objectives, pop_size=pop_size)
     Q = make_new_pop(P, pop_size)
     for i in tqdm(range(num_generations)):
@@ -265,11 +263,14 @@ def pnsga(trainer, objectives, pop_size=400, num_generations=20000,
             for ind_j in R:
                 ham_dist += np.count_nonzero(
                     ind_i['eat_vector'] != ind_j['eat_vector'])
-            ind_i['behavioral_diversity'] = ham_dist/len(R)/len(ind_i['eat_vector'])
+            ind_i['behavioral_diversity'] = ham_dist/len(R)/len(
+                ind_i['eat_vector'])
             fitnesses.append(ind_i['performance'])
-        avg_fitness = sum(fitnesses)/len(fitnesses)
-        if outfile != None:
+        max_fitness = max(fitnesses)
+        avg_fitness = np.mean(fitnesses)
+        std_fitness = np.std(fitnesses)
+        if outfile is not None:
             with open(outfile, 'a') as f:
-                f.write(f"{avg_fitness}\n")
+                f.write(f"{max_fitness},{avg_fitness},{std_fitness}\n")
         P, Q = generation(R, objectives, pop_size, num_parents)
     return P+Q

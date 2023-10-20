@@ -108,6 +108,12 @@ class Network():
             self.weights[i] += np.outer(self.activations[i+1],
                                         self.activations[i]) * M.T * eta
 
+    def reset_weights(self):
+        for i in range(len(self.weights)):
+            randoms = np.random.rand(*self.weights[i].shape)
+            randoms[self.weights[i] == 0] = 0
+            self.weights[i] = randoms
+
     def connection_cost(self):
         return 1 - sum([
             np.count_nonzero(w) for w in self.weights
@@ -142,19 +148,24 @@ class Network():
         Returns:
             None.
         """
-        n = sum([np.sum(weights) for weights in self.weights])
+        n = sum([np.count_nonzero(weights) for weights in self.weights])
         if p_weightchange == -1:
             p_weightchange = 2/n
         for layer in self.weights:
-            for i in range(len(layer)):
-                for j in range(len(layer[i])):
-                    if np.random.rand() < p_toggle:
-                        layer[i, j] = 0 if layer[i, j] != 0 else np.random.rand()*2-1
-                    if np.random.rand() < p_weightchange and layer[i, j] != 0:
-                        layer[i, j] = polynomial_mutation(layer[i, j], -1, 1, 20)
-                if np.random.rand() < p_reassign:
-                    indices = np.random.choice(range(len(layer[i])), 2, replace=False)
-                    layer[i, [indices[0], indices[1]]] = layer[i, [indices[1], indices[0]]]
+            i = np.random.choice(range(len(layer)), 1)
+            j = np.random.choice(range(len(layer[i])), 1)
+            if np.random.rand() < p_toggle:
+                layer[i, j] = 0 if layer[i, j] != 0 else np.random.rand()*2-1
+            i = np.random.choice(range(len(layer)), 1)
+            j = np.random.choice(range(len(layer[i])), 1)
+            if np.random.rand() < p_weightchange and layer[i, j] != 0:
+                layer[i, j] = polynomial_mutation(layer[i, j], -1, 1, 20)
+            i = np.random.choice(range(len(layer)), 1)
+            if np.random.rand() < p_reassign:
+                indices = np.random.choice(
+                    range(len(layer[i].reshape(layer[i].shape[1]))), 2, replace=False)
+                layer[i, [indices[0], indices[1]]] \
+                    = layer[i, [indices[1], indices[0]]]
         for layer in self.biases:
             for i in range(len(layer)):
                 if np.random.rand() < p_biaschange:
