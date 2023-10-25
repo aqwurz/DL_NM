@@ -251,13 +251,14 @@ def pnsga(trainer, objectives, pop_size=400, num_generations=20000,
     Returns:
         list: The final population.
     """
+    if outfile is not None:
+        open(outfile, 'w').close()
     P = initialize_pop(objectives, pop_size=pop_size)
     Q = make_new_pop(P, pop_size)
     for i in tqdm(range(num_generations)):
         num_parents = len(P)
         with Pool(num_cores) as pool:
             R = pool.map(trainer, P+Q)
-        fitnesses = []
         for ind_i in R:
             ham_dist = 0
             for ind_j in R:
@@ -265,12 +266,11 @@ def pnsga(trainer, objectives, pop_size=400, num_generations=20000,
                     ind_i['eat_vector'] != ind_j['eat_vector'])
             ind_i['behavioral_diversity'] = ham_dist/len(R)/len(
                 ind_i['eat_vector'])
-            fitnesses.append(ind_i['performance'])
-        max_fitness = max(fitnesses)
-        avg_fitness = np.mean(fitnesses)
-        std_fitness = np.std(fitnesses)
+            if outfile is not None:
+                with open(outfile, 'a') as f:
+                    f.write(f"{ind_i['performance']},")
         if outfile is not None:
             with open(outfile, 'a') as f:
-                f.write(f"{max_fitness},{avg_fitness},{std_fitness}\n")
+                f.write("\n")
         P, Q = generation(R, objectives, pop_size, num_parents)
     return P+Q

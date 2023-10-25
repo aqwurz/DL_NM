@@ -87,7 +87,8 @@ class Network():
             inputs = np.array(inputs)
         self.activations[0] = inputs
         for i in range(len(self.weights)):
-            self.activations[i+1] = phi(self.weights[i] @ self.activations[i] + self.biases[i])
+            self.activations[i+1] = phi(
+                self.weights[i] @ self.activations[i] + self.biases[i])
         return self.activations[-1]
 
     def update_weights(self, nm_inputs, eta=0.002):
@@ -95,16 +96,15 @@ class Network():
             nm_inputs = np.array(nm_inputs)
         self.source_inputs = nm_inputs
         for i in range(len(self.weights)):
-            M = []
+            M = np.zeros((len(self.weights[i]),))
             for j in range(len(self.weights[i])):
-                distances = []
+                distances = np.zeros((len(self.source_coords),))
                 coords = np.array(self.node_coords[i+1][j])
-                for source in self.source_coords:
-                    source_arr = np.array(source)
-                    distances.append(g(np.linalg.norm(source_arr-coords)))
-                distances = np.array(distances)
-                M.append(phi(self.source_inputs @ distances))
-            M = np.array(M).reshape((1, len(M)))
+                for k in range(len(self.source_coords)):
+                    source_arr = np.array(self.source_coords[k])
+                    distances[k] = g(np.linalg.norm(source_arr-coords))
+                M[j] = phi(self.source_inputs @ distances)
+            M = M.reshape((1, len(M)))
             self.weights[i] += np.outer(self.activations[i+1],
                                         self.activations[i]) * M.T * eta
 
@@ -167,6 +167,6 @@ class Network():
                 layer[i, [indices[0], indices[1]]] \
                     = layer[i, [indices[1], indices[0]]]
         for layer in self.biases:
-            for i in range(len(layer)):
-                if np.random.rand() < p_biaschange:
-                    layer[i] = polynomial_mutation(layer[i], -1, 1, 20)
+            i = np.random.choice(range(len(layer)), 1)
+            if np.random.rand() < p_biaschange:
+                layer[i] = polynomial_mutation(layer[i], -1, 1, 20)
