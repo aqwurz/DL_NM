@@ -28,7 +28,7 @@ def dominates(i, j, objectives):
     return dom
 
 
-def crowded_compare(j, i):
+def crowded_compare(i, j):
     """Tests if i partially dominates j.
 
     Args:
@@ -74,24 +74,18 @@ def mutate(i, p_toggle=0.20, p_reassign=0.15,
     return new_i
 
 
-def initialize_pop(objectives, pop_size=400):
+def initialize_pop(layer_config, source_config, objectives, pop_size=400):
     """Creates an initial population.
 
     Args:
+        layer_config (list): A list of lists of coordinates for each neuron.
+        source_config (list): A list of coordinates for each point source.
         objectives (dict): The objectives that each individual is assessed for.
         pop_size (int): The amount of individuals to create.
     Returns:
         list: A list of individuals.
     """
     population = []
-    layer_config = [
-        [(i-2, 0) for i in range(5)],
-        [(i-5.5, 1) for i in range(12)],
-        [(i-3.5, 2) for i in range(8)],
-        [(i-2.5, 3) for i in range(6)],
-        [(i-0.5, 4) for i in range(2)]
-    ]
-    source_config = [(-3,2), (3,2)]
     for _ in range(pop_size):
         ind = {
             "network": Network(layer_config, source_config),
@@ -137,9 +131,9 @@ def fast_non_dominated_sort(P, objectives):
         S.append([])
         n.append(0)
         for q in P:
-            if dominates(q, p, objectives):
+            if dominates(p, q, objectives):
                 S[ip].append(q)
-            elif dominates(p, q, objectives):
+            elif dominates(q, p, objectives):
                 n[ip] += 1
         if n[ip] == 0:
             p['rank'] = 1
@@ -253,7 +247,16 @@ def pnsga(trainer, objectives, pop_size=400, num_generations=20000,
     """
     if outfile is not None:
         open(outfile, 'w').close()
-    P = initialize_pop(objectives, pop_size=pop_size)
+    layer_config = [
+        [(i-2, 0) for i in range(5)],
+        [(i-5.5, 1) for i in range(12)],
+        [(i-3.5, 2) for i in range(8)],
+        [(i-2.5, 3) for i in range(6)],
+        [(i-0.5, 4) for i in range(2)]
+    ]
+    source_config = [(-3,2), (3,2)]
+    P = initialize_pop(layer_config, source_config,
+                       objectives, pop_size=pop_size)
     Q = make_new_pop(P, pop_size)
     for i in tqdm(range(num_generations)):
         num_parents = len(P)
