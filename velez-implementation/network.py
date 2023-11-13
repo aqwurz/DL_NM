@@ -78,7 +78,10 @@ class Network():
         self.activations = [np.zeros((len(layer),)) for layer in layer_config]
         self.source_inputs = np.zeros((len(source_config),))
         for layer in layer_config[1:]:
-            units = self.activations[0] if len(self.weights) == 0 else self.weights[-1]
+            if len(self.weights) == 0:
+                units = self.activations[0]
+            else:
+                units = self.weights[-1]
             self.weights.append(np.random.rand(len(layer), len(units))*2-1)
             self.biases.append(np.random.rand(len(layer))*2-1)
 
@@ -107,6 +110,7 @@ class Network():
             M = M.reshape((1, len(M)))
             self.weights[i] += np.outer(self.activations[i+1],
                                         self.activations[i]) * M.T * eta
+            self.weights[i] = np.clip(self.weights[i], -1, 1)
 
     def reset_weights(self):
         for i in range(len(self.weights)):
@@ -128,22 +132,37 @@ class Network():
         return clone
 
     def mutate(self, p_toggle=0.20, p_reassign=0.15,
-               p_biaschange=0.10, p_weightchange=-1):
+               p_biaschange=0.10, p_weightchange=-1,
+               paper_mutation=False):
         """Mutates the network.
 
         Args:
-            p_toggle: The probability of toggling a connection.
+            p_toggle (float): The probability of toggling a connection.
                 Defaults to 0.20 (20%).
-            p_reassign: The probability of reassigning a connection's source
-                or target from one neuron to another.
+            p_reassign (float): The probability of reassigning a connection's
+                source or target from one neuron to another.
                 Defaults to 0.15 (15%).
-            p_biaschange: The prbability of changing the bias of a neuron.
+            p_biaschange (float): The prbability of changing the bias of a
+                neuron.
                 Defaults to 0.10 (10%).
-            p_weightchange: The probability of changing the weight of a
+            p_weightchange (float): The probability of changing the weight of a
                 connection.
                 If -1, sets the probability to 2/n, n being the number of
                 connections in the whole network.
                 Defaults to -1.
+            paper_mutation (bool): Which mutation paradigm to use:
+                If True, the mutation operations are applied thus, following
+                    the previous work in Ellefsen and Velez:
+                    - Toggling connections: Per network
+                    - Reassigning connections: Per connection
+                    - Mutating bias: Per neuron
+                    - Mutating weights: Per connection
+                If False:
+                    - Toggling connections: Per layer
+                    - Reassigning connections: Per layer
+                    - Mutating bias: Per layer
+                    - Mutating weights: Per layer
+                Defaults to False.
 
         Returns:
             None.
@@ -151,22 +170,51 @@ class Network():
         n = sum([np.count_nonzero(weights) for weights in self.weights])
         if p_weightchange == -1:
             p_weightchange = 2/n
-        for layer in self.weights:
+        if paper_mutation:
+            layer = self.weights[
+                np.random.choice(range(len(self.weights)))]
             i = np.random.choice(range(len(layer)), 1)
             j = np.random.choice(range(len(layer[i])), 1)
             if np.random.rand() < p_toggle:
-                layer[i, j] = 0 if layer[i, j] != 0 else np.random.rand()*2-1
-            i = np.random.choice(range(len(layer)), 1)
-            j = np.random.choice(range(len(layer[i])), 1)
-            if np.random.rand() < p_weightchange and layer[i, j] != 0:
-                layer[i, j] = polynomial_mutation(layer[i, j], -1, 1, 20)
-            i = np.random.choice(range(len(layer)), 1)
-            if np.random.rand() < p_reassign:
-                indices = np.random.choice(
-                    range(len(layer[i].reshape(layer[i].shape[1]))), 2, replace=False)
-                layer[i, [indices[0], indices[1]]] \
-                    = layer[i, [indices[1], indices[0]]]
-        for layer in self.biases:
-            i = np.random.choice(range(len(layer)), 1)
-            if np.random.rand() < p_biaschange:
-                layer[i] = polynomial_mutation(layer[i], -1, 1, 20)
+                if layer[i, j] != 0:
+                    layer[i, j] = 0
+                else:
+                    layer[i, j] = np.random.rand()*2-1
+            for layer in self.weights:
+                for i in range(len(layer)):
+                    for j in range(len(layer[i])):
+                        if np.random.rand() < p_weightchange \
+                           and layer[i, j] != 0:
+                            layer[i, j] = polynomial_mutation(
+                                layer[i, j], -1, 1, 20)
+                        if np.random.rand() < p_reassign:
+                            k = np.random.choice(range(len(layer[i])))
+                            layer[i, [j, k]] = layer[i, [k, j]]
+            for layer in self.biases:
+                for i in range(len(layer)):
+                    if np.random.rand() < p_biaschange:
+                        layer[i] = polynomial_mutation(layer[i], -1, 1, 20)
+        else:
+            for layer in self.weights:
+                i = np.random.choice(range(len(layer)), 1)
+                j = np.random.choice(range(len(layer[i])), 1)
+                if np.random.rand() < p_toggle:
+                    if layer[i, j] != 0:
+                        layer[i, j] = 0
+                    else:
+                        layer[i, j] = np.random.rand()*2-1
+                i = np.random.choice(range(len(layer)), 1)
+                j = np.random.choice(range(len(layer[i])), 1)
+                if np.random.rand() < p_weightchange and layer[i, j] != 0:
+                    layer[i, j] = polynomial_mutation(layer[i, j], -1, 1, 20)
+                i = np.random.choice(range(len(layer)), 1)
+                if np.random.rand() < p_reassign:
+                    indices = np.random.choice(
+                        range(len(layer[i].reshape(layer[i].shape[1]))),
+                        2, replace=False)
+                    layer[i, [indices[0], indices[1]]] \
+                        = layer[i, [indices[1], indices[0]]]
+            for layer in self.biases:
+                i = np.random.choice(range(len(layer)), 1)
+                if np.random.rand() < p_biaschange:
+                    layer[i] = polynomial_mutation(layer[i], -1, 1, 20)

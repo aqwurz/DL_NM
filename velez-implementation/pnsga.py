@@ -17,7 +17,7 @@ def dominates(i, j, objectives):
         j (dict): A solution.
         objectives (dict): What objectives to check.
     Returns:
-        bool: if i > j.
+        bool: if i <dom j.
     """
     dom = False
     for m in objectives.keys():
@@ -35,30 +35,44 @@ def crowded_compare(i, j):
         i (dict): A solution.
         j (dict): A solution.
     Returns:
-        bool: if i >n j.
+        bool: if i <ndom j.
     """
     return (i['rank'] < j['rank']) \
         or ((i['rank'] == j['rank']) and (i['distance'] > j['distance']))
 
 
 def mutate(i, p_toggle=0.20, p_reassign=0.15,
-           p_biaschange=0.10, p_weightchange=-1):
+           p_biaschange=0.10, p_weightchange=-1,
+           paper_mutation=False):
     """Creates a new individual by mutating its parent.
 
     Args:
         i (dict): The parent individual.
-        p_toggle: The probability of toggling a connection.
+        p_toggle (float): The probability of toggling a connection.
             Defaults to 0.20 (20%).
-        p_reassign: The probability of reassigning a connection's source
-            or target from one neuron to another.
+        p_reassign (float): The probability of reassigning a connection's
+            source or target from one neuron to another.
             Defaults to 0.15 (15%).
-        p_biaschange: The prbability of changing the bias of a neuron.
+        p_biaschange (float): The prbability of changing the bias of a neuron.
             Defaults to 0.10 (10%).
-        p_weightchange: The probability of changing the weight of a
+        p_weightchange (float): The probability of changing the weight of a
             connection.
             If -1, sets the probability to 2/n, n being the number of
             connections in the whole network.
             Defaults to -1.
+        paper_mutation (bool): Which mutation paradigm to use:
+            If True, the mutation operations are applied thus, following
+                the previous work in Ellefsen and Velez:
+                - Toggling connections: Per network
+                - Reassigning connections: Per connection
+                - Mutating bias: Per neuron
+                - Mutating weights: Per connection
+            If False:
+                - Toggling connections: Per layer
+                - Reassigning connections: Per layer
+                - Mutating bias: Per layer
+                - Mutating weights: Per layer
+            Defaults to False.
 
     Returns:
         dict: The mutated individual.
@@ -69,7 +83,8 @@ def mutate(i, p_toggle=0.20, p_reassign=0.15,
         p_toggle=p_toggle,
         p_reassign=p_reassign,
         p_biaschange=p_biaschange,
-        p_weightchange=p_weightchange)
+        p_weightchange=p_weightchange,
+        paper_mutation=paper_mutation)
     new_i['connection_cost_n'] = new_i['network'].connection_cost()
     return new_i
 
@@ -82,6 +97,7 @@ def initialize_pop(layer_config, source_config, objectives, pop_size=400):
         source_config (list): A list of coordinates for each point source.
         objectives (dict): The objectives that each individual is assessed for.
         pop_size (int): The amount of individuals to create.
+            Defaults to 400.
     Returns:
         list: A list of individuals.
     """
@@ -98,19 +114,86 @@ def initialize_pop(layer_config, source_config, objectives, pop_size=400):
     return population
 
 
-def make_new_pop(P, pop_size):
+def tournament_selection(P, objectives, num_selected=50):
+    """Performs tournament selection.
+
+    Args:
+        P (list): The parent population as dicts.
+        num_selected (int): How many individuals to select.
+            Defaults to 50.
+    Returns:
+        list: The selected individuals as dicts.
+    """
+    selected = P.copy()
+    crowding_distance_assignment(selected, objectives)
+    while len(selected) > num_selected:
+        np.random.shuffle(selected)
+        i = 0
+        while i+1 < len(selected) and len(selected) > num_selected:
+            # if selected[i]['performance'] > selected[i+1]['performance']:
+            if crowded_compare(selected[i], selected[i+1]):
+                selected.pop(i+1)
+            else:  # necessary to guarantee termination
+                selected.pop(i)
+            i += 1
+    return selected
+
+
+def make_new_pop(P, num_children, objectives,
+                 num_selected=50,
+                 p_toggle=0.20, p_reassign=0.15,
+                 p_biaschange=0.10, p_weightchange=-1,
+                 paper_mutation=False):
     """Creates children from a parent population.
 
     Args:
         P (list): The parent population as dicts.
-        pop_size (int): The intended size of each population.
+        num_children (int): The intended amount of children to make.
+        objectives (dict): The objectives that each individual is assessed for.
+        num_selected (int): How many individuals to select in tournament
+            selection.
+            Defaults to 50.
+        p_toggle (float): The probability of toggling a connection.
+            Defaults to 0.20 (20%).
+        p_reassign (float): The probability of reassigning a connection's
+            source or target from one neuron to another.
+            Defaults to 0.15 (15%).
+        p_biaschange (float): The prbability of changing the bias of a neuron.
+            Defaults to 0.10 (10%).
+        p_weightchange (float): The probability of changing the weight of a
+            connection.
+            If -1, sets the probability to 2/n, n being the number of
+            connections in the whole network.
+            Defaults to -1.
+        paper_mutation (bool): Which mutation paradigm to use:
+            If True, the mutation operations are applied thus, following
+                the previous work in Ellefsen and Velez:
+                - Toggling connections: Per network
+                - Reassigning connections: Per connection
+                - Mutating bias: Per neuron
+                - Mutating weights: Per connection
+            If False:
+                - Toggling connections: Per layer
+                - Reassigning connections: Per layer
+                - Mutating bias: Per layer
+                - Mutating weights: Per layer
+            Defaults to False.
+
     Returns:
         list: The new child population as dicts.
     """
-    output = [mutate(i) for i in P]
-    if len(P) + len(output) < pop_size:
-        output += [mutate(P[i%len(P)])
-                   for i in range(pop_size-len(P)-len(output))]
+    selected = tournament_selection(P, objectives, num_selected=num_selected)
+    output = [mutate(np.random.choice(selected),
+                     p_toggle=p_toggle,
+                     p_reassign=p_reassign,
+                     p_biaschange=p_biaschange,
+                     p_weightchange=p_weightchange,
+                     paper_mutation=paper_mutation)
+              for _ in range(num_children)]
+    for i in output:
+        for m in i.keys():
+            if m not in ['network', 'connection_cost_n']:
+                i[m] = 0
     return output
 
 
@@ -144,7 +227,7 @@ def fast_non_dominated_sort(P, objectives):
         for p in F[i]:
             ip = P.index(p)
             for q in S[ip]:
-                iq = S[ip].index(q)
+                iq = P.index(q)
                 n[iq] -= 1
                 if n[iq] == 0:
                     q['rank'] = i+2
@@ -178,15 +261,45 @@ def crowding_distance_assignment(individuals, objectives):
             )/(objectives[m]['max']-objectives[m]['min'])
 
 
-def generation(R, objectives, pop_size, num_parents):
+def generation(R, objectives, pop_size,
+               num_selected=50,
+               p_toggle=0.20, p_reassign=0.15,
+               p_biaschange=0.10, p_weightchange=-1,
+               paper_mutation=False):
     """Performs an iteration of PNGSA.
 
     Args:
-        P (list): A list of parent solutions.
-        Q (list): A list of child solutions.
+        R (list): A list of parent and child solutions.
         objectives (dict): A dictionary of objectives and their parameters.
         pop_size (int): The intended size of each population.
-        num_parents (int): The amount of new parents to select.
+        num_selected (int): How many individuals to select in tournament
+            selection.
+            Defaults to 50.
+        p_toggle (float): The probability of toggling a connection.
+            Defaults to 0.20 (20%).
+        p_reassign (float): The probability of reassigning a connection's
+            source or target from one neuron to another.
+            Defaults to 0.15 (15%).
+        p_biaschange (float): The prbability of changing the bias of a neuron.
+            Defaults to 0.10 (10%).
+        p_weightchange (float): The probability of changing the weight of a
+            connection.
+            If -1, sets the probability to 2/n, n being the number of
+            connections in the whole network.
+            Defaults to -1.
+        paper_mutation (bool): Which mutation paradigm to use:
+            If True, the mutation operations are applied thus, following
+                the previous work in Ellefsen and Velez:
+                - Toggling connections: Per network
+                - Reassigning connections: Per connection
+                - Mutating bias: Per neuron
+                - Mutating weights: Per connection
+            If False:
+                - Toggling connections: Per layer
+                - Reassigning connections: Per layer
+                - Mutating bias: Per layer
+                - Mutating weights: Per layer
+            Defaults to False.
 
     Returns:
         list: The new parents.
@@ -198,27 +311,95 @@ def generation(R, objectives, pop_size, num_parents):
         p_obj = objectives[obj]['probability']
         if np.random.rand() <= p_obj:
             chosen_objectives[obj] = objectives[obj]
-    N = num_parents
+    N = pop_size//2
     F = fast_non_dominated_sort(R, chosen_objectives)
     P_new = []
     i = 0
     while i < len(F) and len(P_new) + len(F[i]) < N:
-        crowding_distance_assignment(F[i], chosen_objectives)
+        # crowding_distance_assignment(F[i], chosen_objectives)
         P_new += F[i]
         i += 1
     if i >= len(F):
         i = len(F) - 1
+    crowding_distance_assignment(F[i], chosen_objectives)
     F[i].sort(key=functools.cmp_to_key(
-        lambda i, j: 1 if crowded_compare(i, j) else -1))
+        lambda i, j: (1 if crowded_compare(i, j) else -1)),
+        reverse=True)
     P_new += F[i][0:(N-len(P_new))]
-    Q_new = make_new_pop(P_new, pop_size)
-    [ind['network'].reset_weights() for ind in P_new+Q_new]
+    Q_new = make_new_pop(P_new, pop_size//2, objectives,
+                         num_selected=num_selected,
+                         p_toggle=p_toggle,
+                         p_reassign=p_reassign,
+                         p_biaschange=p_biaschange,
+                         p_weightchange=p_weightchange)
 
     return P_new, Q_new
 
 
+def calculate_behavioral_diversity(R):
+    """Calculates behavioral diversity based on Hamming distance.
+
+    Args:
+        R (list): A list of individuals as dictionaries.
+    Returns:
+        None.
+    """
+    for ind_i in R:
+        ham_dist = 0
+        for ind_j in R:
+            ham_dist += np.count_nonzero(
+                ind_i['eat_vector'] != ind_j['eat_vector'])
+        ind_i['behavioral_diversity'] \
+            = ham_dist/len(R)/len(ind_i['eat_vector'])
+
+
+def write_to_file(R, fn, eol=True):
+    """Writes fitnesses to a file.
+
+    Args:
+        R (list): A list of individuals as dictionaries.
+        fn (str): The filename to write to.
+        eol (bool): Whether to write a newline at the end.
+            Defaults to True.
+    Returns:
+        None.
+    """
+    for ind_i in R:
+        with open(fn, 'a') as f:
+            f.write(f"{ind_i['performance']},")
+    if eol:
+        with open(fn, 'a') as f:
+            f.write("\n")
+
+
+def execute(R, trainer, num_cores, outfile, eol=True):
+    """Trains individuals and writes fitnesses to a file.
+
+    Args:
+        R (list): A list of individuals as dictionaries.
+        trainer (fn): The function that runs the experiment on the individual.
+        objectives (dict): A dictionary describing each objective.
+        num_cores (int): How many cores to use for training.
+        outfile (str): The filename to write to.
+        eol (bool): Whether to write a newline at the end.
+            Defaults to True.
+    Returns:
+        list: The processed individuals.
+    """
+    with Pool(num_cores) as pool:
+        R = pool.map(trainer, R)
+    if outfile is not None:
+        write_to_file(R, outfile, eol=eol)
+    return R
+
+
 def pnsga(trainer, objectives, pop_size=400, num_generations=20000,
-          num_cores=cpu_count(), outfile=None):
+          num_cores=cpu_count(),
+          num_selected=50,
+          p_toggle=0.20, p_reassign=0.15,
+          p_biaschange=0.10, p_weightchange=-1,
+          paper_mutation=False,
+          outfile=None):
     """Runs the PNGSA algorithm.
 
     Args:
@@ -237,6 +418,34 @@ def pnsga(trainer, objectives, pop_size=400, num_generations=20000,
         num_cores (int): How many cores to use to use to train individuals.
             Defaults to the number of cores given by
             multiprocessing.cpu_count().
+        num_selected (int): How many individuals to select in tournament
+            selection.
+            Defaults to 50.
+        p_toggle (float): The probability of toggling a connection.
+            Defaults to 0.20 (20%).
+        p_reassign (float): The probability of reassigning a connection's
+            source or target from one neuron to another.
+            Defaults to 0.15 (15%).
+        p_biaschange (float): The prbability of changing the bias of a neuron.
+            Defaults to 0.10 (10%).
+        p_weightchange (float): The probability of changing the weight of a
+            connection.
+            If -1, sets the probability to 2/n, n being the number of
+            connections in the whole network.
+            Defaults to -1.
+        paper_mutation (bool): Which mutation paradigm to use:
+            If True, the mutation operations are applied thus, following
+                the previous work in Ellefsen and Velez:
+                - Toggling connections: Per network
+                - Reassigning connections: Per connection
+                - Mutating bias: Per neuron
+                - Mutating weights: Per connection
+            If False:
+                - Toggling connections: Per layer
+                - Reassigning connections: Per layer
+                - Mutating bias: Per layer
+                - Mutating weights: Per layer
+            Defaults to False.
         outfile (str): A path to a file to write average fitnesses to.
             If None, does not write anything.
             If not None, blanks the file before writing to it.
@@ -256,24 +465,29 @@ def pnsga(trainer, objectives, pop_size=400, num_generations=20000,
     ]
     source_config = [(-3,2), (3,2)]
     P = initialize_pop(layer_config, source_config,
-                       objectives, pop_size=pop_size)
-    Q = make_new_pop(P, pop_size)
+                       objectives, pop_size=pop_size//2)
+    P = execute(P, trainer, num_cores, None)
+    Q = make_new_pop(P, pop_size//2, objectives,
+                     num_selected=num_selected,
+                     p_toggle=p_toggle,
+                     p_reassign=p_reassign,
+                     p_biaschange=p_biaschange,
+                     p_weightchange=p_weightchange,
+                     paper_mutation=paper_mutation)
+    Q = execute(Q, trainer, num_cores, None)
+    if 'behavioral_diversity' in objectives.keys():
+        calculate_behavioral_diversity(P+Q)
     for i in tqdm(range(num_generations)):
-        num_parents = len(P)
-        with Pool(num_cores) as pool:
-            R = pool.map(trainer, P+Q)
-        for ind_i in R:
-            ham_dist = 0
-            for ind_j in R:
-                ham_dist += np.count_nonzero(
-                    ind_i['eat_vector'] != ind_j['eat_vector'])
-            ind_i['behavioral_diversity'] = ham_dist/len(R)/len(
-                ind_i['eat_vector'])
-            if outfile is not None:
-                with open(outfile, 'a') as f:
-                    f.write(f"{ind_i['performance']},")
+        P, Q = generation(P+Q, objectives, pop_size,
+                          num_selected=num_selected,
+                          p_toggle=p_toggle,
+                          p_reassign=p_reassign,
+                          p_biaschange=p_biaschange,
+                          p_weightchange=p_weightchange,
+                          paper_mutation=paper_mutation)
         if outfile is not None:
-            with open(outfile, 'a') as f:
-                f.write("\n")
-        P, Q = generation(R, objectives, pop_size, num_parents)
+            write_to_file(P, outfile, eol=False)
+        Q = execute(Q, trainer, num_cores, outfile)
+        if 'behavioral_diversity' in objectives.keys():
+            calculate_behavioral_diversity(P+Q)
     return P+Q
