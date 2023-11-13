@@ -4,7 +4,7 @@ import functools
 import numpy as np
 from multiprocessing import Pool, cpu_count
 from tqdm import tqdm
-from time import time
+from pickle import dump
 
 from network import Network
 
@@ -353,7 +353,7 @@ def calculate_behavioral_diversity(R):
             = ham_dist/len(R)/len(ind_i['eat_vector'])
 
 
-def write_to_file(R, fn, eol=True):
+def write_to_file(R, fn, eol=True, only_max=False):
     """Writes fitnesses to a file.
 
     Args:
@@ -361,18 +361,27 @@ def write_to_file(R, fn, eol=True):
         fn (str): The filename to write to.
         eol (bool): Whether to write a newline at the end.
             Defaults to True.
+        only_max (bool): Whether to only write the highest fitness to file.
+            Defaults to False.
     Returns:
         None.
     """
+    max_ind = {'performance': -1}
     for ind_i in R:
+        if max_ind['performance'] < ind_i['performance']:
+            max_ind = ind_i
+        if not only_max:
+            with open(fn, 'a') as f:
+                f.write(f"{ind_i['performance']},")
+    if only_max:
         with open(fn, 'a') as f:
-            f.write(f"{ind_i['performance']},")
+            f.write(f"{max_ind['performance']},")
     if eol:
         with open(fn, 'a') as f:
             f.write("\n")
 
 
-def execute(R, trainer, num_cores, outfile, eol=True):
+def execute(R, trainer, num_cores, outfile, eol=True, only_max=False):
     """Trains individuals and writes fitnesses to a file.
 
     Args:
@@ -383,13 +392,15 @@ def execute(R, trainer, num_cores, outfile, eol=True):
         outfile (str): The filename to write to.
         eol (bool): Whether to write a newline at the end.
             Defaults to True.
+        only_max (bool): Whether to only write the highest fitness to file.
+            Defaults to False.
     Returns:
         list: The processed individuals.
     """
     with Pool(num_cores) as pool:
         R = pool.map(trainer, R)
     if outfile is not None:
-        write_to_file(R, outfile, eol=eol)
+        write_to_file(R, outfile, eol=eol, only_max=only_max)
     return R
 
 
@@ -399,7 +410,8 @@ def pnsga(trainer, objectives, pop_size=400, num_generations=20000,
           p_toggle=0.20, p_reassign=0.15,
           p_biaschange=0.10, p_weightchange=-1,
           paper_mutation=False,
-          outfile=None):
+          outfile=None,
+          only_max=False):
     """Runs the PNGSA algorithm.
 
     Args:
@@ -450,6 +462,8 @@ def pnsga(trainer, objectives, pop_size=400, num_generations=20000,
             If None, does not write anything.
             If not None, blanks the file before writing to it.
             Defaults to None.
+        only_max (bool): Whether to only write the highest fitness to file.
+            Defaults to False.
 
     Returns:
         list: The final population.
@@ -486,8 +500,10 @@ def pnsga(trainer, objectives, pop_size=400, num_generations=20000,
                           p_weightchange=p_weightchange,
                           paper_mutation=paper_mutation)
         if outfile is not None:
-            write_to_file(P, outfile, eol=False)
-        Q = execute(Q, trainer, num_cores, outfile)
+            write_to_file(P, outfile, eol=False, only_max=only_max)
+        Q = execute(Q, trainer, num_cores, outfile, only_max=only_max)
         if 'behavioral_diversity' in objectives.keys():
             calculate_behavioral_diversity(P+Q)
+    with open(f"{outfile[:-4]}.pickle", 'wb') as f:
+        dump(P+Q, f)
     return P+Q

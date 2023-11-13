@@ -88,7 +88,7 @@ if __name__ == '__main__':
                         help="How many individuals to select in tournament \
                         selection")
     parser.add_argument("--paper-mutation", action="store_true",
-                        help="Which mutation distributions to use")
+                        help="Use mutation distribution from paper")
     parser.add_argument("--num-cores", "-c", type=int, default=cpu_count(),
                         help="The number of cores to use for training")
     parser.add_argument("--objectives", "-m", nargs="+",
@@ -97,6 +97,8 @@ if __name__ == '__main__':
                         help="Which objectives to use")
     parser.add_argument("--outfile", "-o", type=str, required=True,
                         help="Output file name comment")
+    parser.add_argument("--only-max", action="store_true",
+                        help="Only write highest fitness to file")
     args = parser.parse_args()
     selected_objectives = {m: objectives[m] for m in args.objectives}
     current_date = str(date.today()).replace("-", "")
@@ -107,4 +109,5 @@ if __name__ == '__main__':
           num_selected=args.num_selected,
           num_cores=args.num_cores,
           paper_mutation=args.paper_mutation,
-          outfile=f"logs/{current_date}_{args.outfile}.csv")
+          outfile=f"logs/{current_date}_{args.outfile}.csv",
+          only_max=args.only_max)
