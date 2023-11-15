@@ -5,6 +5,7 @@ import numpy as np
 from multiprocessing import Pool, cpu_count
 from tqdm import tqdm
 from pickle import dump
+from time import time
 
 from network import Network
 
@@ -490,11 +491,13 @@ def pnsga(trainer, objectives, pop_size=400, num_generations=20000,
             Defaults to False.
         position (int): Argument for tqdm to function properly when executing
             multiple jobs in parallel.
+            Defaults to 0.
 
     Returns:
         list: The final population.
     """
-    np.random.seed(position)
+    if num_cores == -1:
+        np.random.seed(int(f"{time()}{position}"))
     if outfile is not None:
         open(outfile, 'w').close()
     layer_config = [
