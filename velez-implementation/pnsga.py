@@ -494,6 +494,7 @@ def pnsga(trainer, objectives, pop_size=400, num_generations=20000,
     Returns:
         list: The final population.
     """
+    np.random.seed(position)
     if outfile is not None:
         open(outfile, 'w').close()
     layer_config = [
