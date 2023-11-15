@@ -133,6 +133,7 @@ class Network():
 
     def mutate(self, p_toggle=0.20, p_reassign=0.15,
                p_biaschange=0.10, p_weightchange=-1,
+               p_nudge=0.00,
                paper_mutation=False):
         """Mutates the network.
 
@@ -150,6 +151,9 @@ class Network():
                 If -1, sets the probability to 2/n, n being the number of
                 connections in the whole network.
                 Defaults to -1.
+            p_nudge (float): The probablility of adjusting the position of a
+                neuron.
+                Defaults to 0.00 (0%).
             paper_mutation (bool): Which mutation paradigm to use:
                 If True, the mutation operations are applied thus, following
                     the previous work in Ellefsen and Velez:
@@ -157,11 +161,13 @@ class Network():
                     - Reassigning connections: Per connection
                     - Mutating bias: Per neuron
                     - Mutating weights: Per connection
+                    - Nudging positions: Per neuron
                 If False:
                     - Toggling connections: Per layer
                     - Reassigning connections: Per layer
                     - Mutating bias: Per layer
                     - Mutating weights: Per layer
+                    - Nudging positions: Per layer
                 Defaults to False.
 
         Returns:
@@ -190,6 +196,11 @@ class Network():
                         if np.random.rand() < p_reassign:
                             k = np.random.choice(range(len(layer[i])))
                             layer[i, [j, k]] = layer[i, [k, j]]
+            for layer in self.node_coords:
+                for i in range(len(layer)):
+                    if np.random.rand() < p_nudge:
+                        layer[i] = [x + polynomial_mutation(0, -1, 1, 20)
+                                    for x in layer[i]]
             for layer in self.biases:
                 for i in range(len(layer)):
                     if np.random.rand() < p_biaschange:
@@ -214,6 +225,10 @@ class Network():
                         2, replace=False)
                     layer[i, [indices[0], indices[1]]] \
                         = layer[i, [indices[1], indices[0]]]
+                i = np.random.choice(range(len(layer)), 1)
+                if np.random.rand() < p_nudge:
+                    layer[i] = [x + polynomial_mutation(0, -1, 1, 20)
+                                for x in layer[i]]
             for layer in self.biases:
                 i = np.random.choice(range(len(layer)), 1)
                 if np.random.rand() < p_biaschange:

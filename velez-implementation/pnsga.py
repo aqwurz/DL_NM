@@ -43,6 +43,7 @@ def crowded_compare(i, j):
 
 def mutate(i, p_toggle=0.20, p_reassign=0.15,
            p_biaschange=0.10, p_weightchange=-1,
+           p_nudge=0.00,
            paper_mutation=False):
     """Creates a new individual by mutating its parent.
 
@@ -60,6 +61,9 @@ def mutate(i, p_toggle=0.20, p_reassign=0.15,
             If -1, sets the probability to 2/n, n being the number of
             connections in the whole network.
             Defaults to -1.
+        p_nudge (float): The probablility of adjusting the position of a
+            neuron.
+            Defaults to 0.00 (0%).
         paper_mutation (bool): Which mutation paradigm to use:
             If True, the mutation operations are applied thus, following
                 the previous work in Ellefsen and Velez:
@@ -84,6 +88,7 @@ def mutate(i, p_toggle=0.20, p_reassign=0.15,
         p_reassign=p_reassign,
         p_biaschange=p_biaschange,
         p_weightchange=p_weightchange,
+        p_nudge=p_nudge,
         paper_mutation=paper_mutation)
     new_i['connection_cost_n'] = new_i['network'].connection_cost()
     return new_i
@@ -143,6 +148,7 @@ def make_new_pop(P, num_children, objectives,
                  num_selected=50,
                  p_toggle=0.20, p_reassign=0.15,
                  p_biaschange=0.10, p_weightchange=-1,
+                 p_nudge=0.00,
                  paper_mutation=False):
     """Creates children from a parent population.
 
@@ -165,6 +171,9 @@ def make_new_pop(P, num_children, objectives,
             If -1, sets the probability to 2/n, n being the number of
             connections in the whole network.
             Defaults to -1.
+        p_nudge (float): The probablility of adjusting the position of a
+            neuron.
+            Defaults to 0.00 (0%).
         paper_mutation (bool): Which mutation paradigm to use:
             If True, the mutation operations are applied thus, following
                 the previous work in Ellefsen and Velez:
@@ -188,6 +197,7 @@ def make_new_pop(P, num_children, objectives,
                      p_reassign=p_reassign,
                      p_biaschange=p_biaschange,
                      p_weightchange=p_weightchange,
+                     p_nudge=p_nudge,
                      paper_mutation=paper_mutation)
               for _ in range(num_children)]
     for i in output:
@@ -265,6 +275,7 @@ def generation(R, objectives, pop_size,
                num_selected=50,
                p_toggle=0.20, p_reassign=0.15,
                p_biaschange=0.10, p_weightchange=-1,
+               p_nudge=0.00,
                paper_mutation=False):
     """Performs an iteration of PNGSA.
 
@@ -287,6 +298,9 @@ def generation(R, objectives, pop_size,
             If -1, sets the probability to 2/n, n being the number of
             connections in the whole network.
             Defaults to -1.
+        p_nudge (float): The probablility of adjusting the position of a
+            neuron.
+            Defaults to 0.00 (0%).
         paper_mutation (bool): Which mutation paradigm to use:
             If True, the mutation operations are applied thus, following
                 the previous work in Ellefsen and Velez:
@@ -331,7 +345,9 @@ def generation(R, objectives, pop_size,
                          p_toggle=p_toggle,
                          p_reassign=p_reassign,
                          p_biaschange=p_biaschange,
-                         p_weightchange=p_weightchange)
+                         p_weightchange=p_weightchange,
+                         p_nudge=p_nudge,
+                         paper_mutation=paper_mutation)
 
     return P_new, Q_new
 
@@ -397,8 +413,11 @@ def execute(R, trainer, num_cores, outfile, eol=True, only_max=False):
     Returns:
         list: The processed individuals.
     """
-    with Pool(num_cores) as pool:
-        R = pool.map(trainer, R)
+    if num_cores > 1:
+        with Pool(num_cores) as pool:
+            R = pool.map(trainer, R)
+    else:
+        R = [trainer(ind) for ind in R]
     if outfile is not None:
         write_to_file(R, outfile, eol=eol, only_max=only_max)
     return R
@@ -409,9 +428,11 @@ def pnsga(trainer, objectives, pop_size=400, num_generations=20000,
           num_selected=50,
           p_toggle=0.20, p_reassign=0.15,
           p_biaschange=0.10, p_weightchange=-1,
+          p_nudge=0.00,
           paper_mutation=False,
           outfile=None,
-          only_max=False):
+          only_max=False,
+          position=0):
     """Runs the PNGSA algorithm.
 
     Args:
@@ -445,6 +466,9 @@ def pnsga(trainer, objectives, pop_size=400, num_generations=20000,
             If -1, sets the probability to 2/n, n being the number of
             connections in the whole network.
             Defaults to -1.
+        p_nudge (float): The probablility of adjusting the position of a
+            neuron.
+            Defaults to 0.00 (0%).
         paper_mutation (bool): Which mutation paradigm to use:
             If True, the mutation operations are applied thus, following
                 the previous work in Ellefsen and Velez:
@@ -464,6 +488,8 @@ def pnsga(trainer, objectives, pop_size=400, num_generations=20000,
             Defaults to None.
         only_max (bool): Whether to only write the highest fitness to file.
             Defaults to False.
+        position (int): Argument for tqdm to function properly when executing
+            multiple jobs in parallel.
 
     Returns:
         list: The final population.
@@ -487,17 +513,19 @@ def pnsga(trainer, objectives, pop_size=400, num_generations=20000,
                      p_reassign=p_reassign,
                      p_biaschange=p_biaschange,
                      p_weightchange=p_weightchange,
+                     p_nudge=p_nudge,
                      paper_mutation=paper_mutation)
     Q = execute(Q, trainer, num_cores, None)
     if 'behavioral_diversity' in objectives.keys():
         calculate_behavioral_diversity(P+Q)
-    for i in tqdm(range(num_generations)):
+    for i in tqdm(range(num_generations), position=position):
         P, Q = generation(P+Q, objectives, pop_size,
                           num_selected=num_selected,
                           p_toggle=p_toggle,
                           p_reassign=p_reassign,
                           p_biaschange=p_biaschange,
                           p_weightchange=p_weightchange,
+                          p_nudge=p_nudge,
                           paper_mutation=paper_mutation)
         if outfile is not None:
             write_to_file(P, outfile, eol=False, only_max=only_max)
