@@ -497,7 +497,7 @@ def pnsga(trainer, objectives, pop_size=400, num_generations=20000,
         list: The final population.
     """
     if num_cores == -1:
-        np.random.seed(int(f"{time()}{position}"))
+        np.random.seed(int(f"{time():.0f}{position}"))
     if outfile is not None:
         open(outfile, 'w').close()
     layer_config = [
