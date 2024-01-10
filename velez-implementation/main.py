@@ -2,13 +2,44 @@
 
 import numpy as np
 import os
+import cProfile
 
 from network import *
 from pnsga import *
 from multiprocessing import cpu_count, Pool
 
 
-def train(individual, iterations=30, lifetimes=4, season_length=5):
+def make_environment(num_foods=4):
+    """Creates an environment for training.
+
+    Args:
+        num_foods (int): How many foods to include in the environment.
+            Defaults to 4.
+    Returns:
+        np.array: The foods of the environment represented as 3-bit vectors,
+            where half of the food is poisonous in summer and half of the food
+            is poisonous in winter. The halves of food can be identical.
+        int: The decision bit for the summer season.
+        int: The decision bit for the winter season.
+    """
+    decision_bit_summer = np.random.randint(0, 3)
+    decision_bit_winter = np.random.randint(0, 3)
+    foods = np.zeros((num_foods, 3))
+    for i in range(num_foods):
+        for j in range(3):
+            foods[i, j] = [-1, 1][np.random.randint(0, 2)]
+    indices = np.arange(0, num_foods)
+    np.random.shuffle(indices)
+    foods[indices[:num_foods//2], decision_bit_summer] = -1
+    foods[indices[num_foods//2:], decision_bit_summer] = 1
+    np.random.shuffle(indices)
+    foods[indices[:num_foods//2], decision_bit_winter] = -1
+    foods[indices[num_foods//2:], decision_bit_winter] = 1
+    return foods, decision_bit_summer, decision_bit_winter
+
+
+def train(individual, iterations=30, lifetimes=4, season_length=5,
+          num_foods=4, profile=False):
     """Performs the experiment on an individual.
 
     Args:
@@ -19,13 +50,20 @@ def train(individual, iterations=30, lifetimes=4, season_length=5):
             Defaults to 4.
         season_length (int): How many days a season lasts for.
             Defaults to 5.
+        num_foods (int): How many foods to include in each environment.
+            Defaults to 4.
+        profile (bool): Whether or not to do cProfile profiling.
+            Defaults to False.
 
     Returns:
         dict: The trained individual.
     """
+    if profile:
+        pr = cProfile.Profile()
+        pr.enable()
     network = individual['network']
     scores = np.zeros((lifetimes,))
-    eat_vector = np.zeros((lifetimes*iterations,)).astype(bool)
+    eat_vector = np.zeros((lifetimes*iterations*num_foods,)).astype(bool)
     foods = np.array(
         [[-1 if bit == 0 else 1 for bit in ((i >> 2) % 2, (i >> 1) % 2, i % 2)]
          for i in range(8)])
@@ -35,28 +73,43 @@ def train(individual, iterations=30, lifetimes=4, season_length=5):
         winter = True
         prev_summer = 0
         prev_winter = 0
-        decision_bit_summer = np.random.randint(0, 3)
-        decision_bit_winter = np.random.randint(0, 3)
+        foods, decision_bit_summer, decision_bit_winter = \
+            make_environment(num_foods)
+        eat_count = 0
+        nm_inputs = np.zeros((2,), dtype=np.float64)
         for j in range(iterations):
             if j % season_length == 0:
                 summer, winter = winter, summer
-            food = foods[np.random.randint(0, len(foods))]
-            inputs = np.zeros((5,))
-            inputs[:3] = food
-            inputs[3] = prev_summer
-            inputs[4] = prev_winter
-            outputs = network.forward(inputs)
-            ate_summer = summer and outputs[0] > 0
-            ate_winter = winter and outputs[1] > 0
-            eat_vector[i*iterations+j] = ate_summer or ate_winter
-            prev_summer = food[decision_bit_summer] if ate_summer else 0
-            prev_winter = food[decision_bit_winter] if ate_winter else 0
-            score += prev_summer + prev_winter
-            network.update_weights([prev_summer, prev_winter])
+            for k in range(num_foods):
+                food = foods[k]
+                inputs = np.zeros((5,))
+                inputs[:3] = food
+                inputs[3] = prev_summer
+                inputs[4] = prev_winter
+                outputs = network.forward(inputs)
+                ate_summer = summer and outputs[0] > 0
+                ate_winter = winter and outputs[1] > 0
+                eat_count += ate_summer + ate_winter
+                eat_vector[(i*iterations+j) * num_foods + k] = \
+                    ate_summer or ate_winter
+                prev_summer = food[decision_bit_summer] if ate_summer else 0
+                prev_winter = food[decision_bit_winter] if ate_winter else 0
+                score += prev_summer + prev_winter
+                nm_inputs[0] = prev_summer
+                nm_inputs[1] = prev_winter
+                network.update_weights(nm_inputs)
         # network.reset_weights()
-        scores[i] = 0.5 + score/iterations
+        if eat_count != 0:
+            scores[i] = 0.5 + score/eat_count
+        else:
+            scores[i] = 0.5
     individual['eat_vector'] = eat_vector
-    individual['performance'] = np.mean(scores)
+    m = np.mean(scores)
+    individual['performance'] = m
+    individual['objective_values'][individual['mapping']['performance']] = m
+    if profile:
+        pr.disable()
+        pr.print_stats(sort='tottime')
     return individual
 
 
@@ -113,8 +166,6 @@ if __name__ == '__main__':
     parser.add_argument("--p-nudge", "-pn", type=float, default=0.00,
                         help="Probability of changing neuron position \
                         in mutation (defaults to 0%%)")
-    parser.add_argument("--paper-mutation", action="store_true",
-                        help="Use mutation distribution from paper")
     parser.add_argument("--objectives", "-m", nargs="+",
                         default=["performance", "behavioral_diversity",
                                  "connection_cost_n"],
@@ -142,7 +193,6 @@ if __name__ == '__main__':
              args.p_biaschange,
              args.p_weightchange,
              args.p_nudge,
-             args.paper_mutation,
              f"{outfolder}/{i+1}.csv",
              args.only_max,
              i)
@@ -157,6 +207,5 @@ if __name__ == '__main__':
               num_selected=args.num_selected,
               num_cores=args.num_cores,
               p_nudge=args.p_nudge,
-              paper_mutation=args.paper_mutation,
               outfile=f"logs/{current_date}_{args.outfile}.csv",
               only_max=args.only_max)

@@ -22,10 +22,11 @@ for arg in argv[1:]:
         dfs.append(df)
     else:
         df = pd.read_csv(arg, header=None)
-        sns.lineplot(data=df.max(axis=1), errorbar=None)
+        sns.lineplot(data=df.mean(axis=1), errorbar=None)
         dfs.append(df)
-sns.lineplot(data=[
-    np.mean([d.loc[i].max() for d in dfs])
-    for i in range(len(dfs[0]))], errorbar=None, linewidth=5)
-plt.legend(labels=["expected"]+argv[1:]+["mean"])
+#sns.lineplot(data=[
+#    np.mean([d.loc[i].max() for d in dfs])
+#    for i in range(len(dfs[0]))], errorbar=None, linewidth=5)
+#plt.legend(labels=["expected"]+argv[1:]+["mean"])
+plt.legend(labels=["expected", "mean"])
 plt.show()

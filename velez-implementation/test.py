@@ -2,11 +2,14 @@ import functools
 import numpy as np
 import matplotlib.pyplot as plt
 from multiprocessing import cpu_count
+import cProfile
+import math
 
 from pnsga import fast_non_dominated_sort, \
     crowding_distance_assignment, crowded_compare, tournament_selection, \
     make_new_pop, execute, initialize_pop, mutate, \
-    calculate_behavioral_diversity
+    calculate_behavioral_diversity, pnsga
+from network import phi, g
 from main import train
 
 objectives = {
@@ -54,6 +57,19 @@ def test_parent_creation():
     plt.gca().set_aspect('equal')
     plt.show()
 
+
+def test_nds():
+    P = [{m: np.random.rand() for m in objectives.keys()} for _ in range(400)]
+    for ind in P:
+        ind['objective_values'] = np.array([ind[m] for m in objectives.keys()])
+    F = fast_non_dominated_sort(P, objectives)
+    P_objv = np.array([ind['objective_values'] for ind in P])
+    ranks = fast_non_dominated_sort_alt(P_objv)
+    F_alt = [[]]*ranks.max()
+    for i in range(ranks.max()):
+        F_alt[i] = [P[j] for j in range(len(P)) if (ranks == i+1)[j]]
+    print([[P.index(ind) for ind in Fi] for Fi in F])
+    print([[P.index(ind) for ind in Fi] for Fi in F_alt])
 
 def test_tournament():
     R = [{'performance': np.random.rand()} for _ in range(200)]
@@ -140,4 +156,63 @@ def test_full_run():
             ind.pop('tc_chosen', None)
         generation += 1
 
-test_full_run()
+
+def profile(single_core=False):
+    objectives = {
+        "performance": {
+            "probability": 1.00,
+            "min": -0.5,
+            "max": 1.5
+        },
+        "behavioral_diversity": {
+            "probability": 1.00,
+            "min": 0,
+            "max": 1
+        },
+        "connection_cost_n": {
+            "probability": 0.75,
+            "min": 0,
+            "max": 1
+        }
+    }
+    if single_core:
+        pnsga(train, objectives,
+              profile=True,
+              num_generations=20,
+              num_cores=1
+              )
+    else:
+        pnsga(train, objectives,
+              profile=True,
+              num_generations=20,
+              )
+
+
+def profile_uw():
+    nm_inputs = np.zeros((2,), dtype=np.float64)
+    weights = np.random.rand(2,6)
+    next_node_coords = np.array([[-1.5,4],[-0.5,4]])
+    source_coords = np.array([[-3.0,2.0],[3.0,2.0]])
+    activations = np.array([-1,-1,1,1,-1,-1]).astype(np.float64)
+    next_activations = np.array([1,-0.54927423])
+    eta = 0.002
+    pr = cProfile.Profile()
+    pr.enable()
+    for _ in range(10000):
+        M = np.zeros((1, len(weights)))
+        for j in range(len(weights)):
+            distances = np.zeros((len(source_coords),))
+            for k in range(len(source_coords)):
+                predist = source_coords[k]-next_node_coords[j]
+                predistsum = 0
+                for l in predist:
+                    predistsum += l**2
+                distances[k] = g(math.sqrt(predistsum))
+            M[0, j] = phi(nm_inputs @ distances)
+        weights += np.outer(next_activations, activations) * M.T * eta
+        weights.clip(-1, 1, out=weights)
+    pr.disable()
+    pr.print_stats(sort='tottime')
+
+
+profile(single_core=True)

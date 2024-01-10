@@ -6,27 +6,16 @@ from multiprocessing import Pool, cpu_count
 from tqdm import tqdm
 from pickle import dump
 from time import time
+import cProfile
+import numba
+from numba.typed import List as NBList
 
 from network import Network
 
 
-def dominates(i, j, objectives):
-    """Tests if i dominates j.
-
-    Args:
-        i (dict): A solution.
-        j (dict): A solution.
-        objectives (dict): What objectives to check.
-    Returns:
-        bool: if i <dom j.
-    """
-    dom = False
-    for m in objectives.keys():
-        if i[m] < j[m]:
-            return False
-        elif i[m] > j[m]:
-            dom = True
-    return dom
+@numba.njit('b1(f8[:], f8[:])')
+def dominates(i, j):
+    return np.all(i > j)
 
 
 def crowded_compare(i, j):
@@ -42,14 +31,14 @@ def crowded_compare(i, j):
         or ((i['rank'] == j['rank']) and (i['distance'] > j['distance']))
 
 
-def mutate(i, p_toggle=0.20, p_reassign=0.15,
+def mutate(i, objectives, p_toggle=0.20, p_reassign=0.15,
            p_biaschange=0.10, p_weightchange=-1,
-           p_nudge=0.00,
-           paper_mutation=False):
+           p_nudge=0.00):
     """Creates a new individual by mutating its parent.
 
     Args:
         i (dict): The parent individual.
+        objectives (dict): The objectives that each individual is assessed for.
         p_toggle (float): The probability of toggling a connection.
             Defaults to 0.20 (20%).
         p_reassign (float): The probability of reassigning a connection's
@@ -65,19 +54,6 @@ def mutate(i, p_toggle=0.20, p_reassign=0.15,
         p_nudge (float): The probablility of adjusting the position of a
             neuron.
             Defaults to 0.00 (0%).
-        paper_mutation (bool): Which mutation paradigm to use:
-            If True, the mutation operations are applied thus, following
-                the previous work in Ellefsen and Velez:
-                - Toggling connections: Per network
-                - Reassigning connections: Per connection
-                - Mutating bias: Per neuron
-                - Mutating weights: Per connection
-            If False:
-                - Toggling connections: Per layer
-                - Reassigning connections: Per layer
-                - Mutating bias: Per layer
-                - Mutating weights: Per layer
-            Defaults to False.
 
     Returns:
         dict: The mutated individual.
@@ -90,8 +66,11 @@ def mutate(i, p_toggle=0.20, p_reassign=0.15,
         p_biaschange=p_biaschange,
         p_weightchange=p_weightchange,
         p_nudge=p_nudge,
-        paper_mutation=paper_mutation)
-    new_i['connection_cost_n'] = new_i['network'].connection_cost()
+    )
+    if 'connection_cost_n' in objectives.keys():
+        cc = new_i['network'].connection_cost()
+        new_i['connection_cost_n'] = cc
+        new_i['objective_values'][new_i['mapping']['connection_cost_n']] = cc
     return new_i
 
 
@@ -112,7 +91,9 @@ def initialize_pop(layer_config, source_config, objectives, pop_size=400):
         ind = {
             "network": Network(layer_config, source_config),
             "rank": 0,
-            "distance": 0
+            "distance": 0,
+            "mapping": {m: objectives[m]['index'] for m in objectives.keys()},
+            "objective_values": np.zeros((len(objectives)),)
         }
         for obj in objectives.keys():
             ind[obj] = 0
@@ -149,8 +130,7 @@ def make_new_pop(P, num_children, objectives,
                  num_selected=50,
                  p_toggle=0.20, p_reassign=0.15,
                  p_biaschange=0.10, p_weightchange=-1,
-                 p_nudge=0.00,
-                 paper_mutation=False):
+                 p_nudge=0.00):
     """Creates children from a parent population.
 
     Args:
@@ -175,80 +155,82 @@ def make_new_pop(P, num_children, objectives,
         p_nudge (float): The probablility of adjusting the position of a
             neuron.
             Defaults to 0.00 (0%).
-        paper_mutation (bool): Which mutation paradigm to use:
-            If True, the mutation operations are applied thus, following
-                the previous work in Ellefsen and Velez:
-                - Toggling connections: Per network
-                - Reassigning connections: Per connection
-                - Mutating bias: Per neuron
-                - Mutating weights: Per connection
-            If False:
-                - Toggling connections: Per layer
-                - Reassigning connections: Per layer
-                - Mutating bias: Per layer
-                - Mutating weights: Per layer
-            Defaults to False.
 
     Returns:
         list: The new child population as dicts.
     """
     selected = tournament_selection(P, objectives, num_selected=num_selected)
     output = [mutate(np.random.choice(selected),
+                     objectives,
                      p_toggle=p_toggle,
                      p_reassign=p_reassign,
                      p_biaschange=p_biaschange,
                      p_weightchange=p_weightchange,
                      p_nudge=p_nudge,
-                     paper_mutation=paper_mutation)
+                     )
               for _ in range(num_children)]
     for i in output:
-        for m in i.keys():
-            if m not in ['network', 'connection_cost_n']:
+        for m in objectives.keys():
+            if m != 'connection_cost_n':
+                i['objective_values'][i['mapping'][m]] = 0
                 i[m] = 0
+        i['rank'] = 0
+        i['distance'] = 0
     return output
 
 
-def fast_non_dominated_sort(P, objectives):
+@numba.njit('i8[:](f8[:,:])', nogil=True, parallel=True)
+def fast_non_dominated_sort(P):
     """Performs a non-dominated sort of P.
 
     Args:
-        P (list): A list of solutions as dictionaries.
-        objectives (dict): What objectives to check.
+        P (np.array): A matrix of all individuals' objective_values arrays.
     Returns:
-        list: A list of all non-dominated fronts F_i.
+        np.array: The ranks of each individual.
     """
-    F = [[]]
-    S = []
-    n = []
-    for p in P:
-        ip = P.index(p)
-        S.append([])
-        n.append(0)
-        for q in P:
-            if dominates(p, q, objectives):
-                S[ip].append(q)
-            elif dominates(q, p, objectives):
+    F = NBList()
+    S = NBList()
+    F0 = NBList()
+    n = np.zeros((len(P),))
+    R = np.zeros((len(P),), dtype=np.int64)
+    for ip in range(P.shape[0]):
+        Si = NBList()
+        for iq in range(P.shape[0]):
+            if dominates(P[ip], P[iq]):
+                Si.append(iq)
+            elif dominates(P[iq], P[ip]):
                 n[ip] += 1
         if n[ip] == 0:
-            p['rank'] = 1
-            F[0].append(p)
+            R[ip] = 1
+            F0.append(ip)
+        S.append(Si)
+    F.append(F0)
     i = 0
     while len(F[i]) > 0:
-        Q = []
-        for p in F[i]:
-            ip = P.index(p)
-            for q in S[ip]:
-                iq = P.index(q)
+        Q = NBList()
+        for ip in F[i]:
+            for iq in S[ip]:
                 n[iq] -= 1
                 if n[iq] == 0:
-                    q['rank'] = i+2
-                    Q.append(q)
+                    R[iq] = i+2
+                    Q.append(iq)
         i += 1
         if len(Q) == 0:
             break
         else:
             F.append(Q)
-    return F
+    return R
+
+
+def apply_rank_to_individuals(P, R):
+    """Gives each individual its rank after non-dominated sorting.
+
+    Args:
+        P (list): The individuals.
+        R (np.array): The ranks.
+    Returns:
+        None.
+    """
 
 
 def crowding_distance_assignment(individuals, objectives):
@@ -276,8 +258,7 @@ def generation(R, objectives, pop_size,
                num_selected=50,
                p_toggle=0.20, p_reassign=0.15,
                p_biaschange=0.10, p_weightchange=-1,
-               p_nudge=0.00,
-               paper_mutation=False):
+               p_nudge=0.00):
     """Performs an iteration of PNGSA.
 
     Args:
@@ -302,19 +283,6 @@ def generation(R, objectives, pop_size,
         p_nudge (float): The probablility of adjusting the position of a
             neuron.
             Defaults to 0.00 (0%).
-        paper_mutation (bool): Which mutation paradigm to use:
-            If True, the mutation operations are applied thus, following
-                the previous work in Ellefsen and Velez:
-                - Toggling connections: Per network
-                - Reassigning connections: Per connection
-                - Mutating bias: Per neuron
-                - Mutating weights: Per connection
-            If False:
-                - Toggling connections: Per layer
-                - Reassigning connections: Per layer
-                - Mutating bias: Per layer
-                - Mutating weights: Per layer
-            Defaults to False.
 
     Returns:
         list: The new parents.
@@ -327,7 +295,13 @@ def generation(R, objectives, pop_size,
         if np.random.rand() <= p_obj:
             chosen_objectives[obj] = objectives[obj]
     N = pop_size//2
-    F = fast_non_dominated_sort(R, chosen_objectives)
+    ranks = fast_non_dominated_sort(
+        np.array([ind['objective_values'] for ind in R]))
+    F = [[]]*ranks.max()
+    for i in range(len(R)):
+        R[i]['rank'] = ranks[i]
+    for i in range(ranks.max()):
+        F[i] = [R[j] for j in range(len(R)) if (ranks == i+1)[j]]
     P_new = []
     i = 0
     while i < len(F) and len(P_new) + len(F[i]) < N:
@@ -348,9 +322,17 @@ def generation(R, objectives, pop_size,
                          p_biaschange=p_biaschange,
                          p_weightchange=p_weightchange,
                          p_nudge=p_nudge,
-                         paper_mutation=paper_mutation)
+                         )
 
     return P_new, Q_new
+
+
+@numba.njit('f8[:](b1[:,:])', nogil=True, parallel=True)
+def _cbd(R):
+    res_array = np.zeros((R.shape[0],))
+    for i in range(R.shape[0]):
+        res_array[i] = np.sum(R[i] ^ R)/R.size
+    return res_array
 
 
 def calculate_behavioral_diversity(R):
@@ -361,13 +343,11 @@ def calculate_behavioral_diversity(R):
     Returns:
         None.
     """
-    for ind_i in R:
-        ham_dist = 0
-        for ind_j in R:
-            ham_dist += np.count_nonzero(
-                ind_i['eat_vector'] != ind_j['eat_vector'])
-        ind_i['behavioral_diversity'] \
-            = ham_dist/len(R)/len(ind_i['eat_vector'])
+    behavior_array = np.array([ind['eat_vector'] for ind in R])
+    res_array = _cbd(behavior_array)
+    for i in range(len(R)):
+        R[i]['behavioral_diversity'] = res_array[i]
+        R[i]['objective_values'][R[i]['mapping']['behavioral_diversity']] = res_array[i]
 
 
 def write_to_file(R, fn, eol=True, only_max=False):
@@ -430,10 +410,10 @@ def pnsga(trainer, objectives, pop_size=400, num_generations=20000,
           p_toggle=0.20, p_reassign=0.15,
           p_biaschange=0.10, p_weightchange=-1,
           p_nudge=0.00,
-          paper_mutation=False,
           outfile=None,
           only_max=False,
-          position=0):
+          position=0,
+          profile=False):
     """Runs the PNGSA algorithm.
 
     Args:
@@ -470,19 +450,6 @@ def pnsga(trainer, objectives, pop_size=400, num_generations=20000,
         p_nudge (float): The probablility of adjusting the position of a
             neuron.
             Defaults to 0.00 (0%).
-        paper_mutation (bool): Which mutation paradigm to use:
-            If True, the mutation operations are applied thus, following
-                the previous work in Ellefsen and Velez:
-                - Toggling connections: Per network
-                - Reassigning connections: Per connection
-                - Mutating bias: Per neuron
-                - Mutating weights: Per connection
-            If False:
-                - Toggling connections: Per layer
-                - Reassigning connections: Per layer
-                - Mutating bias: Per layer
-                - Mutating weights: Per layer
-            Defaults to False.
         outfile (str): A path to a file to write average fitnesses to.
             If None, does not write anything.
             If not None, blanks the file before writing to it.
@@ -492,22 +459,30 @@ def pnsga(trainer, objectives, pop_size=400, num_generations=20000,
         position (int): Argument for tqdm to function properly when executing
             multiple jobs in parallel.
             Defaults to 0.
+        profile (bool): Whether or not to do cProfile profiling.
+            Defaults to False.
 
     Returns:
         list: The final population.
     """
+    if profile:
+        pr = cProfile.Profile()
+        pr.enable()
     if num_cores == -1:
         np.random.seed(int(f"{time():.0f}{position}"[4:]))
     if outfile is not None:
         open(outfile, 'w').close()
+    layer_config_config = [5, 12, 8, 6, 2]
     layer_config = [
-        [(i-2, 0) for i in range(5)],
-        [(i-5.5, 1) for i in range(12)],
-        [(i-3.5, 2) for i in range(8)],
-        [(i-2.5, 3) for i in range(6)],
-        [(i-0.5, 4) for i in range(2)]
-    ]
-    source_config = [(-3,2), (3,2)]
+        np.array([
+            (j-layer_config_config[i]/2-0.5, float(i))
+            for j in range(layer_config_config[i])])
+        for i in range(len(layer_config_config))]
+    source_config = [(-3.0, 2.0), (3.0, 2.0)]
+    count = 0
+    for m in objectives.keys():
+        objectives[m]['index'] = count
+        count += 1
     P = initialize_pop(layer_config, source_config,
                        objectives, pop_size=pop_size//2)
     P = execute(P, trainer, num_cores, None)
@@ -518,7 +493,7 @@ def pnsga(trainer, objectives, pop_size=400, num_generations=20000,
                      p_biaschange=p_biaschange,
                      p_weightchange=p_weightchange,
                      p_nudge=p_nudge,
-                     paper_mutation=paper_mutation)
+                     )
     Q = execute(Q, trainer, num_cores, None)
     if 'behavioral_diversity' in objectives.keys():
         calculate_behavioral_diversity(P+Q)
@@ -530,12 +505,16 @@ def pnsga(trainer, objectives, pop_size=400, num_generations=20000,
                           p_biaschange=p_biaschange,
                           p_weightchange=p_weightchange,
                           p_nudge=p_nudge,
-                          paper_mutation=paper_mutation)
+                          )
         if outfile is not None:
             write_to_file(P, outfile, eol=False, only_max=only_max)
         Q = execute(Q, trainer, num_cores, outfile, only_max=only_max)
         if 'behavioral_diversity' in objectives.keys():
             calculate_behavioral_diversity(P+Q)
-    with open(f"{outfile[:-4]}.pickle", 'wb') as f:
-        dump(P+Q, f)
+    if outfile is not None:
+        with open(f"{outfile[:-4]}.pickle", 'wb') as f:
+            dump(P+Q, f)
+    if profile:
+        pr.disable()
+        pr.print_stats(sort='tottime')
     return P+Q
