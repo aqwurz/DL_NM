@@ -143,7 +143,7 @@ class Network():
     def copy(self):
         clone = Network(self.node_coords, self.source_coords)
         clone.weights = [w.copy() for w in self.weights]
-        clone.biases = self.biases.copy()
+        clone.biases = [b.copy() for b in self.biases]
         clone.activations = [a.copy() for a in self.activations]
         return clone
 

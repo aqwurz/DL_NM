@@ -45,6 +45,10 @@ def post_evolution_analysis(dirname, num_envs=80, iterations=30,
             ind = pickle.load(bf)
             R.append(ind)
     best_R = [get_best_ind(sub_R) for sub_R in R]
+    for ind in best_R:
+        ind['fitness_over_lifetime'] = 0
+        ind['training_fitness'] = 0
+        ind['testing_fitness'] = 0
     for _ in tqdm(range(num_envs)):
         foods, decision_bit_summer, decision_bit_winter = make_environment()
         for ind in best_R:
@@ -79,13 +83,10 @@ def post_evolution_analysis(dirname, num_envs=80, iterations=30,
                     nm_inputs[0] = prev_summer
                     nm_inputs[1] = prev_winter
                     network.update_weights(nm_inputs)
-                eats[j] = 0.5 + score/eat_count if eat_count != 0 else 0.5
-            if eat_count != 0:
-                score = 0.5 + score/eat_count
-            else:
-                score = 0.5
-            ind['fitness_over_lifetime'] = eats
-            ind['training_fitness'] = score
+                eats[j] = 0.5 + score/num_foods
+            score = 0.5 + score/(iterations*num_foods)
+            ind['fitness_over_lifetime'] += eats
+            ind['training_fitness'] += score
             # testing phase
             summer = False
             winter = True
@@ -113,10 +114,18 @@ def post_evolution_analysis(dirname, num_envs=80, iterations=30,
                 score = 0.5 + score/eat_count
             else:
                 score = 0.5
-            ind['testing_fitness'] = score
+            ind['testing_fitness'] += score
     for ind in best_R:
+        ind['fitness_over_lifetime'] /= num_envs
+        ind['training_fitness'] /= num_envs
+        ind['testing_fitness'] /= num_envs
         print(f"Training fitness {ind['training_fitness']}")
         print(f"Testing fitness {ind['testing_fitness']}")
+    print()
+    print(f"Overall training fitness: {np.mean([ind['training_fitness'] for ind in best_R])}")
+    print(f"Overall testing fitness: {np.mean([ind['testing_fitness'] for ind in best_R])}")
+    print(f"Max training fitness: {np.max([ind['training_fitness'] for ind in best_R])}")
+    print(f"Max testing fitness: {np.max([ind['testing_fitness'] for ind in best_R])}")
 
 
 if __name__ == '__main__':

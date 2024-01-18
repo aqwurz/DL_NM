@@ -215,4 +215,4 @@ def profile_uw():
     pr.print_stats(sort='tottime')
 
 
-profile(single_core=True)
+profile(single_core=False)

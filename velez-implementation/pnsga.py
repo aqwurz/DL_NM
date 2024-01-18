@@ -31,6 +31,22 @@ def crowded_compare(i, j):
         or ((i['rank'] == j['rank']) and (i['distance'] > j['distance']))
 
 
+def generate_environment_seed():
+    """Creates a new seed for an environment.
+
+    Args:
+        None.
+    Returns:
+        int: The seed.
+    """
+    s_pos_ind = np.random.randint(0, 6)
+    w_pos_ind = np.random.randint(0, 6)
+    matrix = np.random.randint(0, 2**12)
+    s_dec_ind = np.random.randint(0, 3)
+    w_dec_ind = np.random.randint(0, 3)
+    return int(f"{s_pos_ind:03b}{w_pos_ind:03b}{matrix:012b}{s_dec_ind:02b}{w_dec_ind:02b}", 2)
+
+
 def mutate(i, objectives, p_toggle=0.20, p_reassign=0.15,
            p_biaschange=0.10, p_weightchange=-1,
            p_nudge=0.00):
@@ -394,6 +410,8 @@ def execute(R, trainer, num_cores, outfile, eol=True, only_max=False):
     Returns:
         list: The processed individuals.
     """
+    for ind in R:
+        ind['seeds'] = [generate_environment_seed() for _ in range(4)]
     if num_cores > 1:
         with Pool(num_cores) as pool:
             R = pool.map(trainer, R)

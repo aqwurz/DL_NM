@@ -9,6 +9,70 @@ from pnsga import *
 from multiprocessing import cpu_count, Pool
 
 
+def decode_environment(seed):
+    """Creates an environment from a seed.
+
+    Args:
+        seed (int): A 22-bit integer describing the environment.
+
+    Returns:
+        np.array: The foods of the environment represented as 3-bit vectors,
+            where half of the food is poisonous in summer and half of the food
+            is poisonous in winter. The halves of food can be identical.
+        int: The decision bit for the summer season.
+        int: The decision bit for the winter season.
+    """
+    bitstr = f"{seed:022b}"
+    foods = np.zeros((4, 3))
+    decision_bit_summer = int(bitstr[18:20], 2)
+    decision_bit_winter = int(bitstr[20:22], 2)
+    i = 0
+    j = 0
+    for x in bitstr[6:18]:
+        foods[i, j] = int(x)
+        j += 1
+        if j % 3 == 0:
+            i += 1
+            j = 0
+    raw_summer = bitstr[0:3]
+    raw_winter = bitstr[3:6]
+    match raw_summer:
+        case '000':
+            summer_i = [0, 1]
+        case '001':
+            summer_i = [0, 2]
+        case '010':
+            summer_i = [0, 3]
+        case '011':
+            summer_i = [1, 2]
+        case '100':
+            summer_i = [1, 3]
+        case '101':
+            summer_i = [2, 3]
+        case _:
+            raise ValueError(f"invalid bits for summer: {raw_summer}")
+    match raw_winter:
+        case '000':
+            winter_i = [0, 1]
+        case '001':
+            winter_i = [0, 2]
+        case '010':
+            winter_i = [0, 3]
+        case '011':
+            winter_i = [1, 2]
+        case '100':
+            winter_i = [1, 3]
+        case '101':
+            winter_i = [2, 3]
+        case _:
+            raise ValueError(f"invalid bits for winter: {raw_winter}")
+    foods[:, decision_bit_summer] = 0
+    foods[:, decision_bit_winter] = 0
+    foods[summer_i, decision_bit_summer] = 1
+    foods[winter_i, decision_bit_winter] = 1
+    return foods*2-1, decision_bit_summer, decision_bit_winter
+
+
 def make_environment(num_foods=4):
     """Creates an environment for training.
 
@@ -63,10 +127,8 @@ def train(individual, iterations=30, lifetimes=4, season_length=5,
         pr.enable()
     network = individual['network']
     scores = np.zeros((lifetimes,))
-    eat_vector = np.zeros((lifetimes*iterations*num_foods,)).astype(bool)
-    foods = np.array(
-        [[-1 if bit == 0 else 1 for bit in ((i >> 2) % 2, (i >> 1) % 2, i % 2)]
-         for i in range(8)])
+    eat_vector = np.zeros((lifetimes*iterations*num_foods,), dtype=bool)
+    original_weights = [weights.copy() for weights in network.weights]
     for i in range(lifetimes):
         score = 0
         summer = False
@@ -74,7 +136,7 @@ def train(individual, iterations=30, lifetimes=4, season_length=5,
         prev_summer = 0
         prev_winter = 0
         foods, decision_bit_summer, decision_bit_winter = \
-            make_environment(num_foods)
+            decode_environment(individual['seeds'][i])
         eat_count = 0
         nm_inputs = np.zeros((2,), dtype=np.float64)
         for j in range(iterations):
@@ -98,11 +160,11 @@ def train(individual, iterations=30, lifetimes=4, season_length=5,
                 nm_inputs[0] = prev_summer
                 nm_inputs[1] = prev_winter
                 network.update_weights(nm_inputs)
-        # network.reset_weights()
         if eat_count != 0:
-            scores[i] = 0.5 + score/eat_count
+            scores[i] = 0.5 + score/(iterations*num_foods)
         else:
             scores[i] = 0.5
+        network.weights = original_weights
     individual['eat_vector'] = eat_vector
     m = np.mean(scores)
     individual['performance'] = m
@@ -124,8 +186,8 @@ if __name__ == '__main__':
     objectives = {
         "performance": {
             "probability": 1.00,
-            "min": -0.5,
-            "max": 1.5
+            "min": 0.0,
+            "max": 1.0
         },
         "behavioral_diversity": {
             "probability": 1.00,
