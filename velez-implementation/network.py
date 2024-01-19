@@ -63,6 +63,22 @@ def _update_weights(nm_inputs, weights, next_node_coords, source_coords,
     return weights
 
 
+@numba.njit('f8[:,::1](f8[:,::1], f8, f8)', nogil=True)
+def _mutate(layer, p_weightchange, p_reassign):
+    for i in range(layer.shape[0]):
+        for j in range(layer.shape[1]):
+            if np.random.rand() < p_weightchange \
+               and layer[i, j] != 0:
+                layer[i, j] = polynomial_mutation(
+                    layer[i, j], -1, 1, 20)
+            if np.random.rand() < p_reassign:
+                k = np.random.randint(0, len(layer[i]))
+                temp = layer[i, j]
+                layer[i, j] = layer[i, k]
+                layer[i, k] = temp
+    return layer
+
+
 class Network():
     """
     TODO:
@@ -176,25 +192,17 @@ class Network():
         n = sum([np.count_nonzero(weights) for weights in self.weights])
         if p_weightchange == -1:
             p_weightchange = 2/n
-        layer = self.weights[
-            np.random.choice(range(len(self.weights)))]
-        i = np.random.choice(range(len(layer)), 1)
-        j = np.random.choice(range(len(layer[i])), 1)
+        layer = self.weights[np.random.randint(0, len(self.weights))]
+        i = np.random.randint(0, layer.shape[0])
+        j = np.random.randint(0, layer.shape[1])
         if np.random.rand() < p_toggle:
             if layer[i, j] != 0:
                 layer[i, j] = 0
             else:
                 layer[i, j] = np.random.rand()*2-1
-        for layer in self.weights:
-            for i in range(len(layer)):
-                for j in range(len(layer[i])):
-                    if np.random.rand() < p_weightchange \
-                       and layer[i, j] != 0:
-                        layer[i, j] = polynomial_mutation(
-                            layer[i, j], -1, 1, 20)
-                    if np.random.rand() < p_reassign:
-                        k = np.random.choice(range(len(layer[i])))
-                        layer[i, [j, k]] = layer[i, [k, j]]
+        for i in range(len(self.weights)):
+            self.weights[i] = _mutate(
+                self.weights[i], p_weightchange, p_reassign)
         for layer in self.node_coords:
             for i in range(len(layer)):
                 if np.random.rand() < p_nudge:

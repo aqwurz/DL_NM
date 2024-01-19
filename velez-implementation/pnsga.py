@@ -345,10 +345,7 @@ def generation(R, objectives, pop_size,
 
 @numba.njit('f8[:](b1[:,:])', nogil=True, parallel=True)
 def _cbd(R):
-    res_array = np.zeros((R.shape[0],))
-    for i in range(R.shape[0]):
-        res_array[i] = np.sum(R[i] ^ R)/R.size
-    return res_array
+    return np.array([np.sum(R[i] ^ R)/R.size for i in range(R.shape[0])])
 
 
 def calculate_behavioral_diversity(R):
