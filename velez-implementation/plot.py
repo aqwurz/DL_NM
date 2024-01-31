@@ -25,8 +25,8 @@ for arg in argv[1:]:
         #sns.lineplot(data=df.max(axis=1), errorbar=None)
         dfs.append(df)
 sns.lineplot(data=[
-    np.mean([d.loc[i].mean() for d in dfs])
+    np.mean([d.loc[i].max() for d in dfs])
     for i in range(len(dfs[0]))], errorbar=None, linewidth=5)
-plt.legend(labels=["expected"]+argv[1:]+["mean"])
-#plt.legend(labels=["expected", "mean"])
+#plt.legend(labels=["expected"]+argv[1:]+["mean"])
+plt.legend(labels=["expected", "mean"])
 plt.show()

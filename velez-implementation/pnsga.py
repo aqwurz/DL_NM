@@ -13,6 +13,46 @@ from numba.typed import List as NBList
 from network import Network
 
 
+class Environment():
+    def __init__(self):
+        food_ids = [
+            [7, 6, 5, 4],  # decision bit 0
+            [3, 2, 1, 0],  # decision bit 0
+            [6, 4, 2, 0],  # decision bit 2
+            [7, 5, 3, 1],  # decision bit 2
+            [7, 6, 3, 2],  # decision bit 1
+            [5, 4, 1, 0]   # decision bit 1
+        ]
+        self.foods_summer = np.array(food_ids[np.random.randint(0, 6)])
+        self.foods_winter = np.array(food_ids[np.random.randint(0, 6)])
+        self.presentation_order = np.array(
+            [[0, 1, 2, 3, 4, 5, 6, 7]]*30
+        )
+        [np.random.shuffle(day_order) for day_order in self.presentation_order]
+
+
+@numba.njit('i8[:](i8)')
+def decode_food_id(food_id):
+    """Translates an integer representation into a bit representation.
+
+    Args:
+        food_id (int): An 3-bit integer.
+
+    Returns:
+        np.array: The food as three bits.
+    """
+    out = np.ones((3,), dtype=np.int64)*-1
+    if food_id >= 4:
+        out[0] = 1
+        food_id -= 4
+    if food_id >= 2:
+        out[1] = 1
+        food_id -= 2
+    if food_id >= 1:
+        out[2] = 1
+    return out
+
+
 @numba.njit('b1(f8[:], f8[:])')
 def dominates(i, j):
     return np.all(i > j)
@@ -29,22 +69,6 @@ def crowded_compare(i, j):
     """
     return (i['rank'] < j['rank']) \
         or ((i['rank'] == j['rank']) and (i['distance'] > j['distance']))
-
-
-def generate_environment_seed():
-    """Creates a new seed for an environment.
-
-    Args:
-        None.
-    Returns:
-        int: The seed.
-    """
-    s_pos_ind = np.random.randint(0, 6)
-    w_pos_ind = np.random.randint(0, 6)
-    matrix = np.random.randint(0, 2**12)
-    s_dec_ind = np.random.randint(0, 3)
-    w_dec_ind = np.random.randint(0, 3)
-    return int(f"{s_pos_ind:03b}{w_pos_ind:03b}{matrix:012b}{s_dec_ind:02b}{w_dec_ind:02b}", 2)
 
 
 def mutate(i, objectives, p_toggle=0.20, p_reassign=0.15,
@@ -108,7 +132,6 @@ def initialize_pop(layer_config, source_config, objectives, pop_size=400):
             "network": Network(layer_config, source_config),
             "rank": 0,
             "distance": 0,
-            "mapping": {m: objectives[m]['index'] for m in objectives.keys()},
             "objective_values": np.zeros((len(objectives)),)
         }
         for obj in objectives.keys():
@@ -142,8 +165,7 @@ def tournament_selection(P, objectives, num_selected=50):
     return selected
 
 
-def make_new_pop(P, num_children, objectives,
-                 num_selected=50,
+def make_new_pop(P, objectives,
                  p_toggle=0.20, p_reassign=0.15,
                  p_biaschange=0.10, p_weightchange=-1,
                  p_nudge=0.00):
@@ -151,11 +173,7 @@ def make_new_pop(P, num_children, objectives,
 
     Args:
         P (list): The parent population as dicts.
-        num_children (int): The intended amount of children to make.
         objectives (dict): The objectives that each individual is assessed for.
-        num_selected (int): How many individuals to select in tournament
-            selection.
-            Defaults to 50.
         p_toggle (float): The probability of toggling a connection.
             Defaults to 0.20 (20%).
         p_reassign (float): The probability of reassigning a connection's
@@ -175,8 +193,7 @@ def make_new_pop(P, num_children, objectives,
     Returns:
         list: The new child population as dicts.
     """
-    selected = tournament_selection(P, objectives, num_selected=num_selected)
-    output = [mutate(np.random.choice(selected),
+    output = [mutate(ind,
                      objectives,
                      p_toggle=p_toggle,
                      p_reassign=p_reassign,
@@ -184,7 +201,7 @@ def make_new_pop(P, num_children, objectives,
                      p_weightchange=p_weightchange,
                      p_nudge=p_nudge,
                      )
-              for _ in range(num_children)]
+              for ind in P]
     for i in output:
         for m in objectives.keys():
             if m != 'connection_cost_n':
@@ -238,17 +255,6 @@ def fast_non_dominated_sort(P):
     return R
 
 
-def apply_rank_to_individuals(P, R):
-    """Gives each individual its rank after non-dominated sorting.
-
-    Args:
-        P (list): The individuals.
-        R (np.array): The ranks.
-    Returns:
-        None.
-    """
-
-
 def crowding_distance_assignment(individuals, objectives):
     """Assigns distances to each solution in individuals.
 
@@ -259,15 +265,99 @@ def crowding_distance_assignment(individuals, objectives):
         None.
     """
 
+    minmax = {m: {'max': 0, 'min': 1} for m in objectives.keys()}
     for i in individuals:
         i['distance'] = 0
+        for m in objectives.keys():
+            if i[m] > minmax[m]['max']:
+                minmax[m]['max'] = i[m]
+            if i[m] < minmax[m]['min']:
+                minmax[m]['min'] = i[m]
     for m in objectives.keys():
         I_sorted = sorted(individuals, key=lambda x: x[m])
         I_sorted[0]['distance'] = I_sorted[-1]['distance'] = np.infty
         for i in range(1, len(individuals)-1):
             I_sorted[i]['distance'] += (
                 I_sorted[i+1][m]-I_sorted[i-1][m]
-            )/(objectives[m]['max']-objectives[m]['min'])
+            )/(minmax[m]['max']-minmax[m]['min']+0.0001)
+
+
+def new_tournament_selection(P):
+    """TODO"""
+    Q = [None] * len(P)
+    indices_1 = np.arange(0, len(P))
+    indices_2 = np.arange(0, len(P))
+    np.random.shuffle(indices_1)
+    np.random.shuffle(indices_2)
+
+    def compare(i, j):
+        return dominates(i['objective_values'], j['objective_values'])
+
+    for i in range(0, len(P), 4):
+        cands1 = [P[j] for j in indices_1[i:i+4]]
+        cands2 = [P[j] for j in indices_2[i:i+4]]
+        Q[i] = cands1[0] if compare(cands1[0], cands1[1]) else cands1[1]
+        Q[i+1] = cands1[2] if compare(cands1[2], cands1[3]) else cands1[3]
+        Q[i+2] = cands2[0] if compare(cands2[0], cands2[1]) else cands2[1]
+        Q[i+3] = cands2[2] if compare(cands2[2], cands2[3]) else cands2[3]
+    return Q
+
+
+def non_dominated_sorting(R, objectives):
+    """TODO"""
+    N = len(R)//2
+    ranks = fast_non_dominated_sort(
+        np.array([ind['objective_values'] for ind in R]))
+    F = [[]]*ranks.max()
+    for i in range(len(R)):
+        R[i]['rank'] = ranks[i]
+    for i in range(ranks.max()):
+        F[i] = [R[j] for j in range(len(R)) if (ranks == i+1)[j]]
+    P_new = []
+    i = 0
+    while i < len(F) and len(P_new) + len(F[i]) < N:
+        # crowding_distance_assignment(F[i], chosen_objectives)
+        P_new += F[i]
+        i += 1
+    if i >= len(F):
+        i = len(F) - 1
+    crowding_distance_assignment(F[i], objectives)
+    F[i].sort(key=functools.cmp_to_key(
+        lambda i, j: (1 if crowded_compare(i, j) else -1)),
+        reverse=True)
+    P_new += F[i][0:(N-len(P_new))]
+    return P_new
+
+
+def new_generation(P, objectives, trainer,
+                   num_cores=cpu_count(),
+                   p_toggle=0.20, p_reassign=0.15,
+                   p_biaschange=0.10, p_weightchange=-1,
+                   p_nudge=0.00):
+    """TODO"""
+    chosen_objectives = {}
+    for obj in objectives.keys():
+        p_obj = objectives[obj]
+        if np.random.rand() <= p_obj:
+            chosen_objectives[obj] = objectives[obj]
+    # tournament selection
+    Q = new_tournament_selection(P)
+    # mutation
+    Q = make_new_pop(Q, objectives,
+                     p_toggle=p_toggle,
+                     p_reassign=p_reassign,
+                     p_biaschange=p_biaschange,
+                     p_weightchange=p_weightchange,
+                     p_nudge=p_nudge,
+                     )
+    # execution
+    R = execute(P+Q, trainer,
+                num_cores=num_cores,
+                outfile=None)
+    if 'behavioral_diversity' in chosen_objectives.keys():
+        calculate_behavioral_diversity(R)
+    # NDS
+    return non_dominated_sorting(R, chosen_objectives)
 
 
 def generation(R, objectives, pop_size,
@@ -304,10 +394,9 @@ def generation(R, objectives, pop_size,
         list: The new parents.
         list: The new children.
     """
-
     chosen_objectives = {}
     for obj in objectives.keys():
-        p_obj = objectives[obj]['probability']
+        p_obj = objectives[obj]
         if np.random.rand() <= p_obj:
             chosen_objectives[obj] = objectives[obj]
     N = pop_size//2
@@ -331,8 +420,7 @@ def generation(R, objectives, pop_size,
         lambda i, j: (1 if crowded_compare(i, j) else -1)),
         reverse=True)
     P_new += F[i][0:(N-len(P_new))]
-    Q_new = make_new_pop(P_new, pop_size//2, objectives,
-                         num_selected=num_selected,
+    Q_new = make_new_pop(P_new, objectives,
                          p_toggle=p_toggle,
                          p_reassign=p_reassign,
                          p_biaschange=p_biaschange,
@@ -397,7 +485,6 @@ def execute(R, trainer, num_cores, outfile, eol=True, only_max=False):
     Args:
         R (list): A list of individuals as dictionaries.
         trainer (fn): The function that runs the experiment on the individual.
-        objectives (dict): A dictionary describing each objective.
         num_cores (int): How many cores to use for training.
         outfile (str): The filename to write to.
         eol (bool): Whether to write a newline at the end.
@@ -407,8 +494,9 @@ def execute(R, trainer, num_cores, outfile, eol=True, only_max=False):
     Returns:
         list: The processed individuals.
     """
+    envs = [Environment() for _ in range(4)]
     for ind in R:
-        ind['seeds'] = [generate_environment_seed() for _ in range(4)]
+        ind['envs'] = envs
     if num_cores > 1:
         with Pool(num_cores) as pool:
             R = pool.map(trainer, R)
@@ -436,10 +524,9 @@ def pnsga(trainer, objectives, pop_size=400, num_generations=20000,
         objectives (dict): A dictionary describing each objective.
             Each entry consists of the following:
             - key: The name of the objective.
-            - "probability": How likely the objective is to be selected in
+            - value: How likely the objective is to be selected in
                 PNSGA.
-            - "min": The lowest possible value of the objective.
-            - "max": The highest possible value of the objective.
+            Each objective is assumed to vary between 0 and 1.
         pop_size (int): The population size.
             Defaults to 400.
         num_generations (int): How many generations to run the algorithm for.
@@ -494,42 +581,26 @@ def pnsga(trainer, objectives, pop_size=400, num_generations=20000,
             for j in range(layer_config_config[i])])
         for i in range(len(layer_config_config))]
     source_config = [(-3.0, 2.0), (3.0, 2.0)]
-    count = 0
-    for m in objectives.keys():
-        objectives[m]['index'] = count
-        count += 1
+    obj_indexing = list(objectives.keys())
     P = initialize_pop(layer_config, source_config,
-                       objectives, pop_size=pop_size//2)
-    P = execute(P, trainer, num_cores, None)
-    Q = make_new_pop(P, pop_size//2, objectives,
-                     num_selected=num_selected,
-                     p_toggle=p_toggle,
-                     p_reassign=p_reassign,
-                     p_biaschange=p_biaschange,
-                     p_weightchange=p_weightchange,
-                     p_nudge=p_nudge,
-                     )
-    Q = execute(Q, trainer, num_cores, None)
-    if 'behavioral_diversity' in objectives.keys():
-        calculate_behavioral_diversity(P+Q)
+                       objectives, pop_size=pop_size)
+    for ind in P:
+        ind['mapping'] = {m: obj_indexing.index(m) for m in objectives.keys()}
     for i in tqdm(range(num_generations), position=position):
-        P, Q = generation(P+Q, objectives, pop_size,
-                          num_selected=num_selected,
-                          p_toggle=p_toggle,
-                          p_reassign=p_reassign,
-                          p_biaschange=p_biaschange,
-                          p_weightchange=p_weightchange,
-                          p_nudge=p_nudge,
-                          )
+        P = new_generation(P, objectives, trainer,
+                           num_cores=num_cores,
+                           p_toggle=p_toggle,
+                           p_reassign=p_reassign,
+                           p_biaschange=p_biaschange,
+                           p_weightchange=p_weightchange,
+                           p_nudge=p_nudge,
+                           )
         if outfile is not None:
-            write_to_file(P, outfile, eol=False, only_max=only_max)
-        Q = execute(Q, trainer, num_cores, outfile, only_max=only_max)
-        if 'behavioral_diversity' in objectives.keys():
-            calculate_behavioral_diversity(P+Q)
+            write_to_file(P, outfile, only_max=only_max)
     if outfile is not None:
         with open(f"{outfile[:-4]}.pickle", 'wb') as f:
-            dump(P+Q, f)
+            dump(P, f)
     if profile:
         pr.disable()
         pr.print_stats(sort='tottime')
-    return P+Q
+    return P

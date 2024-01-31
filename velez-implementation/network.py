@@ -48,17 +48,22 @@ def polynomial_mutation(x, lower, upper, eta):
     nogil=True)
 def _update_weights(nm_inputs, weights, next_node_coords, source_coords,
                     activations, next_activations, eta):
-    M = np.zeros((1, len(weights)))
-    distances = np.zeros((len(source_coords),))
-    for j in range(len(weights)):
-        for k in range(len(source_coords)):
+    M = np.zeros((1, weights.shape[0]))
+    distances = np.zeros((source_coords.shape[0],))
+    for j in range(weights.shape[0]):
+        for k in range(source_coords.shape[0]):
             predist = source_coords[k]-next_node_coords[j]
             predistsum = 0
             for l in predist:
                 predistsum += l**2
             distances[k] = g(math.sqrt(predistsum))
         M[0, j] = phi(nm_inputs @ distances)
+    mask = weights == 0
     weights += np.outer(next_activations, activations) * M.T * eta
+    for i in range(weights.shape[0]):
+        for j in range(weights.shape[1]):
+            if mask[i, j]:
+                weights[i, j] = 0
     weights.clip(-1, 1, out=weights)
     return weights
 
@@ -72,7 +77,7 @@ def _mutate(layer, p_weightchange, p_reassign):
                 layer[i, j] = polynomial_mutation(
                     layer[i, j], -1, 1, 20)
             if np.random.rand() < p_reassign:
-                k = np.random.randint(0, len(layer[i]))
+                k = np.random.randint(0, layer.shape[1])
                 temp = layer[i, j]
                 layer[i, j] = layer[i, k]
                 layer[i, k] = temp
@@ -122,7 +127,7 @@ class Network():
         self.activations = [np.zeros((len(layer),)) for layer in layer_config]
         for layer in layer_config[1:]:
             if len(self.weights) == 0:
-                size = len(self.activations[0])
+                size = self.activations[0].shape[0]
             else:
                 size = self.weights[-1].shape[0]
             self.weights.append(np.random.rand(len(layer), size)*2-1)
@@ -209,6 +214,6 @@ class Network():
                     layer[i] = [x + polynomial_mutation(0, -1, 1, 20)
                                 for x in layer[i]]
         for layer in self.biases:
-            for i in range(len(layer)):
+            for i in range(layer.shape[0]):
                 if np.random.rand() < p_biaschange:
                     layer[i] = polynomial_mutation(layer[i], -1, 1, 20)

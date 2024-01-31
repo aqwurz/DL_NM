@@ -5,7 +5,7 @@ import os
 import cProfile
 
 from network import *
-from pnsga import *
+from pnsga import pnsga, Environment, decode_food_id
 from multiprocessing import cpu_count, Pool
 
 
@@ -67,8 +67,8 @@ def decode_environment(seed):
         case _:
             raise ValueError(f"invalid bits for winter: {raw_winter}")
     foods[:, decision_bit_summer] = 0
-    foods[:, decision_bit_winter] = 0
     foods[summer_i, decision_bit_summer] = 1
+    foods[:, decision_bit_winter] = 0
     foods[winter_i, decision_bit_winter] = 1
     return foods*2-1, decision_bit_summer, decision_bit_winter
 
@@ -103,7 +103,7 @@ def make_environment(num_foods=4):
 
 
 def train(individual, iterations=30, lifetimes=4, season_length=5,
-          num_foods=4, profile=False):
+          num_foods=8, profile=False):
     """Performs the experiment on an individual.
 
     Args:
@@ -111,7 +111,7 @@ def train(individual, iterations=30, lifetimes=4, season_length=5,
         iterations (int): How many days the environment lasts for.
             Defaults to 30.
         lifetimes (int): How many lifetimes to evaluate the individual for.
-            Defaults to 4.
+            Defaults to 8.
         season_length (int): How many days a season lasts for.
             Defaults to 5.
         num_foods (int): How many foods to include in each environment.
@@ -129,41 +129,68 @@ def train(individual, iterations=30, lifetimes=4, season_length=5,
     scores = np.zeros((lifetimes,))
     eat_vector = np.zeros((lifetimes*iterations*num_foods,), dtype=bool)
     original_weights = [weights.copy() for weights in network.weights]
+    food_count = 0
+    good_count = 0
+    bad_count = 0
     for i in range(lifetimes):
-        score = 0
         summer = False
         winter = True
         prev_summer = 0
         prev_winter = 0
+        """
         foods, decision_bit_summer, decision_bit_winter = \
             decode_environment(individual['seeds'][i])
-        eat_count = 0
         nm_inputs = np.zeros((2,), dtype=np.float64)
         for j in range(iterations):
             if j % season_length == 0:
                 summer, winter = winter, summer
             for k in range(num_foods):
+                food_count += 1
                 food = foods[k]
                 inputs = np.zeros((5,))
                 inputs[:3] = food
-                inputs[3] = prev_summer
-                inputs[4] = prev_winter
                 outputs = network.forward(inputs)
                 ate_summer = summer and outputs[0] > 0
                 ate_winter = winter and outputs[1] > 0
-                eat_count += ate_summer + ate_winter
-                eat_vector[(i*iterations+j) * num_foods + k] = \
-                    ate_summer or ate_winter
                 prev_summer = food[decision_bit_summer] if ate_summer else 0
                 prev_winter = food[decision_bit_winter] if ate_winter else 0
-                score += prev_summer + prev_winter
+        """
+        env = individual['envs'][i]
+        nm_inputs = np.zeros((2,), dtype=np.float64)
+        for j in range(iterations):
+            if j % season_length == 0:
+                summer, winter = winter, summer
+            for k in range(num_foods):
+                food_count += 1
+                food = env.presentation_order[j][k]
+                inputs = np.zeros((5,))
+                inputs[:3] = decode_food_id(food)
+                outputs = network.forward(inputs)
+                ate_summer = summer and outputs[0] > 0
+                ate_winter = winter and outputs[1] > 0
+                prev_summer = 0
+                prev_winter = 0
+                if ate_summer and food in env.foods_summer:
+                    prev_summer = 1
+                elif ate_summer:
+                    prev_summer = -1
+                if ate_winter and food in env.foods_winter:
+                    prev_winter = 1
+                elif ate_winter:
+                    prev_winter = -1
+                if ate_summer or ate_winter:
+                    eat_vector[(i*iterations+j) * num_foods + k] = True
+                    if prev_summer >= 1 or prev_winter >= 1:
+                        good_count += 1
+                    elif prev_summer <= -1 or prev_winter <= -1:
+                        bad_count += 1
+                inputs[3] = prev_summer
+                inputs[4] = prev_winter
+                network.forward(inputs)
                 nm_inputs[0] = prev_summer
                 nm_inputs[1] = prev_winter
                 network.update_weights(nm_inputs)
-        if eat_count != 0:
-            scores[i] = 0.5 + score/(iterations*num_foods)
-        else:
-            scores[i] = 0.5
+        scores[i] = 0.5 + (good_count - bad_count)/food_count
         network.weights = original_weights
     individual['eat_vector'] = eat_vector
     m = np.mean(scores)
@@ -184,21 +211,9 @@ if __name__ == '__main__':
     from argparse import ArgumentParser
     from datetime import date
     objectives = {
-        "performance": {
-            "probability": 1.00,
-            "min": 0.0,
-            "max": 1.0
-        },
-        "behavioral_diversity": {
-            "probability": 1.00,
-            "min": 0,
-            "max": 1
-        },
-        "connection_cost_n": {
-            "probability": 0.75,
-            "min": 0,
-            "max": 1
-        }
+        "performance": 1.00,
+        "behavioral_diversity": 1.00,
+        "connection_cost_n": 0.75
     }
     parser = ArgumentParser()
     parser.add_argument("--num-execs", "-e", type=int, default=1,

@@ -4,25 +4,19 @@ import matplotlib.pyplot as plt
 from multiprocessing import cpu_count
 import cProfile
 import math
+from tqdm import tqdm
 
 from pnsga import fast_non_dominated_sort, \
     crowding_distance_assignment, crowded_compare, tournament_selection, \
     make_new_pop, execute, initialize_pop, mutate, \
-    calculate_behavioral_diversity, pnsga
+    calculate_behavioral_diversity, pnsga, generation, \
+    dominates, new_generation
 from network import phi, g
 from main import train
 
 objectives = {
-    "performance": {
-        "probability": 1.00,
-        "min": -0.5,
-        "max": 1.5
-    },
-    "behavioral_diversity": {
-        "probability": 1.00,
-        "min": 0,
-        "max": 1
-    }
+    "performance": 1.00,
+    "behavioral_diversity": 1.00,
 }
 
 
@@ -58,18 +52,59 @@ def test_parent_creation():
     plt.show()
 
 
+def fast_non_dominated_sort_old(P, objectives):
+    F = [[]]
+    S = []
+    n = []
+    for p in P:
+        ip = P.index(p)
+        S.append([])
+        n.append(0)
+        for q in P:
+            if dominates(p['objective_values'], q['objective_values']):
+                S[ip].append(q)
+            elif dominates(q['objective_values'], p['objective_values']):
+                n[ip] += 1
+        if n[ip] == 0:
+            p['rank'] = 1
+            F[0].append(p)
+    i = 0
+    while len(F[i]).__gt__(0):
+        Q = []
+        for p in F[i]:
+            ip = P.index(p)
+            for q in S[ip]:
+                iq = P.index(q)
+                n[iq] -= 1
+                if n[iq] == 0:
+                    q['rank'] = i+2
+                    Q.append(q)
+        i += 1
+        if len(Q) == 0:
+            break
+        else:
+            F.append(Q)
+    return F
+
+
 def test_nds():
     P = [{m: np.random.rand() for m in objectives.keys()} for _ in range(400)]
     for ind in P:
         ind['objective_values'] = np.array([ind[m] for m in objectives.keys()])
-    F = fast_non_dominated_sort(P, objectives)
+    F = fast_non_dominated_sort_old(P, objectives)
     P_objv = np.array([ind['objective_values'] for ind in P])
-    ranks = fast_non_dominated_sort_alt(P_objv)
+    ranks = fast_non_dominated_sort(P_objv)
     F_alt = [[]]*ranks.max()
     for i in range(ranks.max()):
         F_alt[i] = [P[j] for j in range(len(P)) if (ranks == i+1)[j]]
+    for i in range(len(P)):
+        P[i]['rank'] = ranks[i]
     print([[P.index(ind) for ind in Fi] for Fi in F])
     print([[P.index(ind) for ind in Fi] for Fi in F_alt])
+    print()
+    print([[ind['rank'] for ind in Fi] for Fi in F])
+    print([[ind['rank'] for ind in Fi] for Fi in F_alt])
+
 
 def test_tournament():
     R = [{'performance': np.random.rand()} for _ in range(200)]
@@ -157,23 +192,122 @@ def test_full_run():
         generation += 1
 
 
+def generation_alt(R, objectives, pop_size,
+               num_selected=50,
+               p_toggle=0.20, p_reassign=0.15,
+               p_biaschange=0.10, p_weightchange=-1,
+               p_nudge=0.00):
+    """Performs an iteration of PNGSA.
+
+    Args:
+        R (list): A list of parent and child solutions.
+        objectives (dict): A dictionary of objectives and their parameters.
+        pop_size (int): The intended size of each population.
+        num_selected (int): How many individuals to select in tournament
+            selection.
+            Defaults to 50.
+        p_toggle (float): The probability of toggling a connection.
+            Defaults to 0.20 (20%).
+        p_reassign (float): The probability of reassigning a connection's
+            source or target from one neuron to another.
+            Defaults to 0.15 (15%).
+        p_biaschange (float): The prbability of changing the bias of a neuron.
+            Defaults to 0.10 (10%).
+        p_weightchange (float): The probability of changing the weight of a
+            connection.
+            If -1, sets the probability to 2/n, n being the number of
+            connections in the whole network.
+            Defaults to -1.
+        p_nudge (float): The probablility of adjusting the position of a
+            neuron.
+            Defaults to 0.00 (0%).
+
+    Returns:
+        list: The new parents.
+        list: The new children.
+    """
+
+    chosen_objectives = {}
+    for obj in objectives.keys():
+        p_obj = objectives[obj]['probability']
+        if np.random.rand() <= p_obj:
+            chosen_objectives[obj] = objectives[obj]
+    N = pop_size//2
+    F = fast_non_dominated_sort_old(R, objectives)
+    P_new = []
+    i = 0
+    while i < len(F) and len(P_new) + len(F[i]) < N:
+        # crowding_distance_assignment(F[i], chosen_objectives)
+        P_new += F[i]
+        i += 1
+    if i >= len(F):
+        i = len(F) - 1
+    crowding_distance_assignment(F[i], chosen_objectives)
+    F[i].sort(key=functools.cmp_to_key(
+        lambda i, j: (1 if crowded_compare(i, j) else -1)),
+        reverse=True)
+    P_new += F[i][0:(N-len(P_new))]
+    Q_new = make_new_pop(P_new, pop_size//2, objectives,
+                         num_selected=num_selected,
+                         p_toggle=p_toggle,
+                         p_reassign=p_reassign,
+                         p_biaschange=p_biaschange,
+                         p_weightchange=p_weightchange,
+                         p_nudge=p_nudge,
+                         )
+
+    return P_new, Q_new
+
+
+def test_full_run_neo(num_selected=50):
+    pop_size = 400
+    num_generations = 200
+    num_cores = cpu_count()
+    trainer = train
+    p_toggle = 0.20
+    p_reassign = 0.15
+    p_biaschange = 0.10
+    p_weightchange = -1
+    p_nudge = 0.00
+    position = 0
+    layer_config_config = [5, 12, 8, 6, 2]
+    layer_config = [
+        np.array([
+            (j-layer_config_config[i]/2-0.5, float(i))
+            for j in range(layer_config_config[i])])
+        for i in range(len(layer_config_config))]
+    source_config = [(-3.0, 2.0), (3.0, 2.0)]
+    obj_indexing = list(objectives.keys())
+    P = initialize_pop(layer_config, source_config,
+                       objectives, pop_size=pop_size)
+    for ind in P:
+        ind['mapping'] = {m: obj_indexing.index(m) for m in objectives.keys()}
+    for i in tqdm(range(num_generations), position=position):
+        P = new_generation(P, objectives, trainer,
+                           num_cores=num_cores,
+                           p_toggle=p_toggle,
+                           p_reassign=p_reassign,
+                           p_biaschange=p_biaschange,
+                           p_weightchange=p_weightchange,
+                           p_nudge=p_nudge,
+                           )
+        plt.scatter(x=[ind['performance'] for ind in P],
+                    y=[ind['behavioral_diversity'] for ind in P],
+                    c=[ind['rank'] for ind in P],
+                    cmap='viridis_r',
+                    )
+        plt.axvline(x=np.mean([ind['performance'] for ind in P]))
+        ax = plt.gca()
+        ax.set_xlim(0,1)
+        ax.set_ylim(0,1)
+        plt.show()
+
+
 def profile(single_core=False):
     objectives = {
-        "performance": {
-            "probability": 1.00,
-            "min": -0.5,
-            "max": 1.5
-        },
-        "behavioral_diversity": {
-            "probability": 1.00,
-            "min": 0,
-            "max": 1
-        },
-        "connection_cost_n": {
-            "probability": 0.75,
-            "min": 0,
-            "max": 1
-        }
+        "performance": 1.00,
+        "behavioral_diversity": 1.00,
+        "connection_cost_n": 0.75
     }
     if single_core:
         pnsga(train, objectives,
@@ -215,4 +349,6 @@ def profile_uw():
     pr.print_stats(sort='tottime')
 
 
-profile(single_core=False)
+#profile(single_core=True)
+test_full_run_neo(num_selected=100)
+#test_nds()
