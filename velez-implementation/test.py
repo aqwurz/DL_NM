@@ -10,7 +10,7 @@ from pnsga import fast_non_dominated_sort, \
     crowding_distance_assignment, crowded_compare, tournament_selection, \
     make_new_pop, execute, initialize_pop, mutate, \
     calculate_behavioral_diversity, pnsga, generation, \
-    dominates, new_generation
+    dominates, new_generation, Environment
 from network import phi, g
 from main import train
 
@@ -303,7 +303,8 @@ def test_full_run_neo(num_selected=50):
         plt.show()
 
 
-def profile(single_core=False):
+def profile(single_core=False, num_generations=20,
+            pop_size=400):
     objectives = {
         "performance": 1.00,
         "behavioral_diversity": 1.00,
@@ -311,14 +312,16 @@ def profile(single_core=False):
     }
     if single_core:
         pnsga(train, objectives,
+              pop_size=pop_size,
               profile=True,
-              num_generations=20,
+              num_generations=num_generations,
               num_cores=1
               )
     else:
         pnsga(train, objectives,
+              pop_size=pop_size,
               profile=True,
-              num_generations=20,
+              num_generations=num_generations,
               )
 
 
@@ -349,6 +352,27 @@ def profile_uw():
     pr.print_stats(sort='tottime')
 
 
-#profile(single_core=True)
-test_full_run_neo(num_selected=100)
+def profile_just_train():
+    pop_size = 40
+    layer_config_config = [5, 12, 8, 6, 2]
+    layer_config = [
+        np.array([
+            (j-layer_config_config[i]/2-0.5, float(i))
+            for j in range(layer_config_config[i])])
+        for i in range(len(layer_config_config))]
+    source_config = [(-3.0, 2.0), (3.0, 2.0)]
+    obj_indexing = list(objectives.keys())
+    P = initialize_pop(layer_config, source_config,
+                       objectives, pop_size=pop_size)
+    for ind in P:
+        ind['mapping'] = {m: obj_indexing.index(m) for m in objectives.keys()}
+    envs = [Environment() for _ in range(4)]
+    for ind in P:
+        ind['envs'] = envs
+    train(P[0], profile=True)
+
+
+profile(single_core=True, num_generations=10)
+#profile_just_train()
+#test_full_run_neo(num_selected=100)
 #test_nds()

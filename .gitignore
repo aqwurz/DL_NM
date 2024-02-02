@@ -133,3 +133,6 @@ dmypy.json
 
 # legacy code
 velez-implementation/cythonized/
+
+# test code
+velez-implementation/pnsga_alt.py

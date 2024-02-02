@@ -3,6 +3,7 @@
 import numpy as np
 import numba
 import math
+import utils
 
 
 @numba.vectorize(['f8(f8)', 'f4(f4)'])
@@ -48,6 +49,7 @@ def polynomial_mutation(x, lower, upper, eta):
     nogil=True)
 def _update_weights(nm_inputs, weights, next_node_coords, source_coords,
                     activations, next_activations, eta):
+    """
     M = np.zeros((1, weights.shape[0]))
     distances = np.zeros((source_coords.shape[0],))
     for j in range(weights.shape[0]):
@@ -65,6 +67,27 @@ def _update_weights(nm_inputs, weights, next_node_coords, source_coords,
             if mask[i, j]:
                 weights[i, j] = 0
     weights.clip(-1, 1, out=weights)
+    return weights
+    """
+    distances = np.zeros((nm_inputs.shape[0],))
+    for i in range(weights.shape[0]):
+        pre_phi = 0
+        for j in range(source_coords.shape[0]):
+            predist = source_coords[j]-next_node_coords[i]
+            predistsum = 0
+            for k in range(predist.shape[0]):
+                predistsum += predist[k]**2
+            distances[j] = g(math.sqrt(predistsum))
+        for x in range(nm_inputs.shape[0]):
+            pre_phi += nm_inputs[x] * distances[x]
+        m = phi(pre_phi)
+        for j in range(weights.shape[1]):
+            if weights[i][j] != 0:
+                weights[i][j] += eta * m * activations[i] * next_activations[j]
+                if weights[i][j] < -1:
+                    weights[i][j] = -1
+                elif weights[i][j] > 1:
+                    weights[i][j] = 1
     return weights
 
 
@@ -134,21 +157,27 @@ class Network():
             self.biases.append(np.random.rand(len(layer))*2-1)
 
     def forward(self, inputs):
-        self.activations[0] = inputs
-        for i in range(len(self.weights)):
-            self.activations[i+1] = phi(
-                self.weights[i] @ self.activations[i] + self.biases[i])
+        self.activations = utils.forward(inputs,
+                                         self.weights,
+                                         self.activations,
+                                         self.biases)
         return self.activations[-1]
 
     def update_weights(self, nm_inputs, eta=0.002):
+        self.weights = utils.update_weights_all(nm_inputs,
+                                                self.weights,
+                                                self.node_coords,
+                                                self.source_coords,
+                                                self.activations,
+                                                eta)
+
+    def convert_activations(self):
+        for i in range(len(self.activations)):
+            self.activations[i] = np.asarray(self.activations[i])
+
+    def convert_weights(self):
         for i in range(len(self.weights)):
-            self.weights[i] = _update_weights(nm_inputs,
-                                              self.weights[i],
-                                              self.node_coords[i+1],
-                                              self.source_coords,
-                                              self.activations[i],
-                                              self.activations[i+1],
-                                              eta)
+            self.weights[i] = np.asarray(self.weights[i])
 
     def reset_weights(self):
         for i in range(len(self.weights)):
@@ -206,7 +235,7 @@ class Network():
             else:
                 layer[i, j] = np.random.rand()*2-1
         for i in range(len(self.weights)):
-            self.weights[i] = _mutate(
+            self.weights[i] = utils.mutate(
                 self.weights[i], p_weightchange, p_reassign)
         for layer in self.node_coords:
             for i in range(len(layer)):
