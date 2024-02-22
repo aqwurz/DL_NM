@@ -36,12 +36,14 @@ def decode_food_id(food_id):
     """Translates an integer representation into a bit representation.
 
     Args:
-        food_id (int): An 3-bit integer.
+        food_id (int): A 3-bit integer.
+        switch (bool): If the bits should be inverted, to prevent overfitting
+            on the values of the bits.
 
     Returns:
         np.array: The food as three bits.
     """
-    out = np.ones((3,), dtype=np.int64)*-1
+    out = -np.ones((3,), dtype=np.int64)
     if food_id >= 4:
         out[0] = 1
         food_id -= 4
@@ -67,8 +69,41 @@ def crowded_compare(i, j):
     Returns:
         bool: if i <ndom j.
     """
+    """
     return (i['rank'] < j['rank']) \
         or ((i['rank'] == j['rank']) and (i['distance'] > j['distance']))
+    """
+    return i['distance'] > j['distance']
+
+
+def clone_individual(i):
+    """Creates a non-shallow copy of an individual.
+
+    Args:
+        i (dict): The individual.
+    Returns:
+        dict: The copied individual.
+    """
+    new_i = i.copy()
+    for m in ['objective_values', 'network', 'eat_vector']:
+        if m in new_i.keys():
+            new_i[m] = new_i[m].copy()
+    return new_i
+
+
+def set_objective_value(i, m, value):
+    """Handles objective value setting, to allow for both separated values
+        and having values in a numpy array for fast processing.
+
+    Args:
+        i (dict): The individual to modify.
+        m (str): The objective to set the value for.
+        value (float): The new value of the objective.
+    Returns:
+        None.
+    """
+    i[m] = value
+    i['objective_values'][i['mapping'][m]] = value
 
 
 def mutate(i, objectives, p_toggle=0.20, p_reassign=0.15,
@@ -98,8 +133,7 @@ def mutate(i, objectives, p_toggle=0.20, p_reassign=0.15,
     Returns:
         dict: The mutated individual.
     """
-    new_i = i.copy()
-    new_i['network'] = new_i['network'].copy()
+    new_i = clone_individual(i)
     new_i['network'].mutate(
         p_toggle=p_toggle,
         p_reassign=p_reassign,
@@ -107,14 +141,21 @@ def mutate(i, objectives, p_toggle=0.20, p_reassign=0.15,
         p_weightchange=p_weightchange,
         p_nudge=p_nudge,
     )
-    if 'connection_cost_n' in objectives.keys():
-        cc = new_i['network'].connection_cost()
-        new_i['connection_cost_n'] = cc
-        new_i['objective_values'][new_i['mapping']['connection_cost_n']] = cc
+    for m in objectives.keys():
+        if m == 'connection_cost_n':
+            cc = new_i['network'].connection_cost()
+            set_objective_value(new_i, m, cc)
+        else:
+            set_objective_value(new_i, m, 0)
+    new_i['rank'] = 0
+    new_i['distance'] = 0
     return new_i
 
 
-def initialize_pop(layer_config, source_config, objectives, pop_size=400):
+def initialize_pop(layer_config, source_config, objectives, trainer,
+                   num_cores=cpu_count(),
+                   pop_size=400,
+                   aleat=1):
     """Creates an initial population.
 
     Args:
@@ -123,11 +164,15 @@ def initialize_pop(layer_config, source_config, objectives, pop_size=400):
         objectives (dict): The objectives that each individual is assessed for.
         pop_size (int): The amount of individuals to create.
             Defaults to 400.
+        aleat (int): How many times more individuals to create.
+            Individuals are selected from a larger random population.
+            Defaults to 1.
     Returns:
         list: A list of individuals.
     """
+    obj_indexing = list(objectives.keys())
     population = []
-    for _ in range(pop_size):
+    for _ in range(pop_size*aleat):
         ind = {
             "network": Network(layer_config, source_config),
             "rank": 0,
@@ -136,12 +181,21 @@ def initialize_pop(layer_config, source_config, objectives, pop_size=400):
         }
         for obj in objectives.keys():
             ind[obj] = 0
+        ind['mapping'] = {m: obj_indexing.index(m) for m in objectives.keys()}
         population.append(ind)
-    return population
+    population = execute(population, trainer,
+                         num_cores=num_cores,
+                         outfile=None)
+    if 'behavioral_diversity' in objectives.keys():
+        calculate_behavioral_diversity(population)
+    # NDS
+    P = non_dominated_sorting(population, objectives)
+    return P
 
 
 def tournament_selection(P, objectives, num_selected=50):
     """Performs tournament selection.
+        LEGACY CODE
 
     Args:
         P (list): The parent population as dicts.
@@ -202,13 +256,6 @@ def make_new_pop(P, objectives,
                      p_nudge=p_nudge,
                      )
               for ind in P]
-    for i in output:
-        for m in objectives.keys():
-            if m != 'connection_cost_n':
-                i['objective_values'][i['mapping'][m]] = 0
-                i[m] = 0
-        i['rank'] = 0
-        i['distance'] = 0
     return output
 
 
@@ -274,12 +321,13 @@ def crowding_distance_assignment(individuals, objectives):
             if i[m] < minmax[m]['min']:
                 minmax[m]['min'] = i[m]
     for m in objectives.keys():
-        I_sorted = sorted(individuals, key=lambda x: x[m])
-        I_sorted[0]['distance'] = I_sorted[-1]['distance'] = np.infty
-        for i in range(1, len(individuals)-1):
-            I_sorted[i]['distance'] += (
-                I_sorted[i+1][m]-I_sorted[i-1][m]
-            )/(minmax[m]['max']-minmax[m]['min']+0.0001)
+        if minmax[m]['max']-minmax[m]['min'] != 0:
+            I_sorted = sorted(individuals, key=lambda x: x[m])
+            I_sorted[0]['distance'] = I_sorted[-1]['distance'] = np.infty
+            for i in range(1, len(individuals)-1):
+                I_sorted[i]['distance'] += (
+                    I_sorted[i-1][m]-I_sorted[i+1][m]
+                )/(minmax[m]['max']-minmax[m]['min'])
 
 
 def new_tournament_selection(P):
@@ -290,38 +338,46 @@ def new_tournament_selection(P):
     np.random.shuffle(indices_1)
     np.random.shuffle(indices_2)
 
-    def compare(i, j):
-        return dominates(i['objective_values'], j['objective_values'])
+    def tournament(i, j):
+        if dominates(i['objective_values'], j['objective_values']):
+            return i
+        elif dominates(j['objective_values'], i['objective_values']):
+            return j
+        elif crowded_compare(i, j):
+            return i
+        elif crowded_compare(j, i):
+            return j
+        elif np.random.rand() < 0.5:
+            return i
+        return j
 
     for i in range(0, len(P), 4):
         cands1 = [P[j] for j in indices_1[i:i+4]]
         cands2 = [P[j] for j in indices_2[i:i+4]]
-        Q[i] = cands1[0] if compare(cands1[0], cands1[1]) else cands1[1]
-        Q[i+1] = cands1[2] if compare(cands1[2], cands1[3]) else cands1[3]
-        Q[i+2] = cands2[0] if compare(cands2[0], cands2[1]) else cands2[1]
-        Q[i+3] = cands2[2] if compare(cands2[2], cands2[3]) else cands2[3]
+        Q[i] = tournament(cands1[0], cands1[1])
+        Q[i+1] = tournament(cands1[2], cands1[3])
+        Q[i+2] = tournament(cands2[0], cands2[1])
+        Q[i+3] = tournament(cands2[2], cands2[3])
     return Q
 
 
-def non_dominated_sorting(R, objectives):
+def non_dominated_sorting(R, objectives, N=400):
     """TODO"""
-    N = len(R)//2
     ranks = fast_non_dominated_sort(
         np.array([ind['objective_values'] for ind in R]))
     F = [[]]*ranks.max()
     for i in range(len(R)):
         R[i]['rank'] = ranks[i]
     for i in range(ranks.max()):
-        F[i] = [R[j] for j in range(len(R)) if (ranks == i+1)[j]]
+        F[i] = [R[j] for j in range(len(R)) if ranks[j] == i+1]
+        crowding_distance_assignment(F[i], objectives)
     P_new = []
     i = 0
     while i < len(F) and len(P_new) + len(F[i]) < N:
-        # crowding_distance_assignment(F[i], chosen_objectives)
         P_new += F[i]
         i += 1
     if i >= len(F):
         i = len(F) - 1
-    crowding_distance_assignment(F[i], objectives)
     F[i].sort(key=functools.cmp_to_key(
         lambda i, j: (1 if crowded_compare(i, j) else -1)),
         reverse=True)
@@ -341,7 +397,12 @@ def new_generation(P, objectives, trainer,
         if np.random.rand() <= p_obj:
             chosen_objectives[obj] = objectives[obj]
     # tournament selection
+    for ind in P:
+        ind['selected'] = False
+        ind['parent'] = True
     Q = new_tournament_selection(P)
+    for ind in Q:
+        ind['selected'] = True
     # mutation
     Q = make_new_pop(Q, objectives,
                      p_toggle=p_toggle,
@@ -350,6 +411,9 @@ def new_generation(P, objectives, trainer,
                      p_weightchange=p_weightchange,
                      p_nudge=p_nudge,
                      )
+    for ind in Q:
+        ind['selected'] = False
+        ind['parent'] = False
     # execution
     R = execute(P+Q, trainer,
                 num_cores=num_cores,
@@ -366,6 +430,7 @@ def generation(R, objectives, pop_size,
                p_biaschange=0.10, p_weightchange=-1,
                p_nudge=0.00):
     """Performs an iteration of PNGSA.
+        LEGACY CODE
 
     Args:
         R (list): A list of parent and child solutions.
@@ -447,8 +512,7 @@ def calculate_behavioral_diversity(R):
     behavior_array = np.array([ind['eat_vector'] for ind in R])
     res_array = _cbd(behavior_array)
     for i in range(len(R)):
-        R[i]['behavioral_diversity'] = res_array[i]
-        R[i]['objective_values'][R[i]['mapping']['behavioral_diversity']] = res_array[i]
+        set_objective_value(R[i], 'behavioral_diversity', res_array[i])
 
 
 def write_to_file(R, fn, eol=True, only_max=False):
@@ -509,7 +573,7 @@ def execute(R, trainer, num_cores, outfile, eol=True, only_max=False):
 
 def pnsga(trainer, objectives, pop_size=400, num_generations=20000,
           num_cores=cpu_count(),
-          num_selected=50,
+          aleat=1,
           p_toggle=0.20, p_reassign=0.15,
           p_biaschange=0.10, p_weightchange=-1,
           p_nudge=0.00,
@@ -534,9 +598,9 @@ def pnsga(trainer, objectives, pop_size=400, num_generations=20000,
         num_cores (int): How many cores to use to use to train individuals.
             Defaults to the number of cores given by
             multiprocessing.cpu_count().
-        num_selected (int): How many individuals to select in tournament
-            selection.
-            Defaults to 50.
+        aleat (int): How many times more individuals to initially create.
+            Individuals are selected from a larger random population.
+            Defaults to 1.
         p_toggle (float): The probability of toggling a connection.
             Defaults to 0.20 (20%).
         p_reassign (float): The probability of reassigning a connection's
@@ -577,15 +641,16 @@ def pnsga(trainer, objectives, pop_size=400, num_generations=20000,
     layer_config_config = [5, 12, 8, 6, 2]
     layer_config = [
         np.array([
-            (j-layer_config_config[i]/2-0.5, float(i))
+            (j-layer_config_config[i]/2+0.5, float(i))
             for j in range(layer_config_config[i])])
         for i in range(len(layer_config_config))]
     source_config = [(-3.0, 2.0), (3.0, 2.0)]
-    obj_indexing = list(objectives.keys())
     P = initialize_pop(layer_config, source_config,
-                       objectives, pop_size=pop_size)
-    for ind in P:
-        ind['mapping'] = {m: obj_indexing.index(m) for m in objectives.keys()}
+                       objectives,
+                       trainer,
+                       num_cores=num_cores,
+                       pop_size=pop_size,
+                       aleat=aleat)
     for i in tqdm(range(num_generations), position=position):
         P = new_generation(P, objectives, trainer,
                            num_cores=num_cores,

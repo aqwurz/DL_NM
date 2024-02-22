@@ -8,7 +8,7 @@ import utils
 
 @numba.vectorize(['f8(f8)', 'f4(f4)'])
 def phi(x):
-    return 2/(1 + np.exp(-32*x)) - 1
+    return 2/(1 + np.exp(-30*x)) - 1
 
 
 @numba.njit('f8(f8)', nogil=True, fastmath=True)
@@ -34,14 +34,17 @@ def polynomial_mutation(x, lower, upper, eta):
     Returns:
         float: The mutated value.
     """
-    d1 = (x-lower)/(upper-lower)
-    d2 = (upper-x)/(upper-lower)
     r = np.random.rand()
-    if r <= 0.5:
-        dq = (2*r + (1-2*r)*(1-d1)**(eta+1))**(1/(eta+1))-1
+    if r < 0.5:
+        dq = (2*r)**(1/(eta+1)) - 1
     else:
-        dq = 1 - (2*(1-r) + 2*(r-0.5)*(1-d2)**(eta+1))**(1/(eta+1))
-    return x + dq*(upper-lower)
+        dq = 1 - (2*(1-r))**(1/(eta+1))
+    out = x + dq
+    if out < lower:
+        out = lower
+    elif out > upper:
+        out = upper
+    return out
 
 
 @numba.njit(
@@ -69,21 +72,17 @@ def _update_weights(nm_inputs, weights, next_node_coords, source_coords,
     weights.clip(-1, 1, out=weights)
     return weights
     """
-    distances = np.zeros((nm_inputs.shape[0],))
     for i in range(weights.shape[0]):
         pre_phi = 0
-        for j in range(source_coords.shape[0]):
-            predist = source_coords[j]-next_node_coords[i]
-            predistsum = 0
-            for k in range(predist.shape[0]):
-                predistsum += predist[k]**2
-            distances[j] = g(math.sqrt(predistsum))
-        for x in range(nm_inputs.shape[0]):
-            pre_phi += nm_inputs[x] * distances[x]
+        for j in range(nm_inputs.shape[0]):
+            pre_phi += nm_inputs[j] * g(math.hypot(
+                source_coords[j][0] - next_node_coords[i][0],
+                source_coords[j][1] - next_node_coords[i][1]
+            ))
         m = phi(pre_phi)
         for j in range(weights.shape[1]):
             if weights[i][j] != 0:
-                weights[i][j] += eta * m * activations[i] * next_activations[j]
+                weights[i][j] += eta * m * activations[j] * next_activations[i]
                 if weights[i][j] < -1:
                     weights[i][j] = -1
                 elif weights[i][j] > 1:
@@ -98,12 +97,22 @@ def _mutate(layer, p_weightchange, p_reassign):
             if np.random.rand() < p_weightchange \
                and layer[i, j] != 0:
                 layer[i, j] = polynomial_mutation(
-                    layer[i, j], -1, 1, 20)
+                    layer[i, j], 1e-3, 1, 15)
+    for i in range(layer.shape[0]):
+        for j in range(layer.shape[1]):
             if np.random.rand() < p_reassign:
-                k = np.random.randint(0, layer.shape[1])
-                temp = layer[i, j]
-                layer[i, j] = layer[i, k]
-                layer[i, k] = temp
+                if np.random.rand() < 0.5:
+                    k = np.random.randint(0, layer.shape[1])
+                    temp = layer[i, j]
+                    layer[i, j] = 0  # layer[i, k]
+                    layer[i, k] = temp
+                else:
+                    k = np.random.randint(0, layer.shape[0])
+                    temp = layer[i, j]
+                    layer[i, j] = 0  # layer[k, j]
+                    layer[k, j] = temp
+                return layer
+
     return layer
 
 
@@ -122,7 +131,7 @@ class Network():
     - Add functionality for mutating coordinates
     """
 
-    def __init__(self, layer_config, source_config):
+    def __init__(self, layer_config, source_config, _update_cm=True):
         """Creates a Network instance.
 
         Args:
@@ -142,6 +151,10 @@ class Network():
                 Example:
                 [(0,0), (1,1)] gives rise to two diffusion sources at
                 coordinates 0,0 and 1,1.
+
+            _update_cm (bool): Internal parameter for optimizing copying.
+                Defaults to True.
+
         """
         self.node_coords = layer_config
         self.source_coords = np.array(source_config).astype(np.float64)
@@ -155,21 +168,62 @@ class Network():
                 size = self.weights[-1].shape[0]
             self.weights.append(np.random.rand(len(layer), size)*2-1)
             self.biases.append(np.random.rand(len(layer))*2-1)
+        if _update_cm:
+            self.update_coeff_map()
+
+    def __eq__(self, other):
+        for i in range(len(self.node_coords)-1):
+            if np.all(self.weights[i] == other.weights[i]):
+                return True
+            if np.all(self.biases[i] == other.biases[i]):
+                return True
+        return False
+
+    def update_weights(self, inputs, feedback, summer, eta=0.002, num_updates=5):
+        if feedback != 0:
+            coeff_map = self.coeff_map_summer if summer else self.coeff_map_winter
+            if feedback < 0:
+                coeff_map = [-cm for cm in coeff_map]
+            w, a = utils.present(inputs,
+                                 coeff_map,
+                                 self.weights,
+                                 self.activations,
+                                 self.biases,
+                                 eta,
+                                 num_updates)
+            self.weights = w
+            self.activations = a
 
     def forward(self, inputs):
         self.activations = utils.forward(inputs,
                                          self.weights,
-                                         self.activations,
                                          self.biases)
         return self.activations[-1]
 
-    def update_weights(self, nm_inputs, eta=0.002):
-        self.weights = utils.update_weights_all(nm_inputs,
-                                                self.weights,
-                                                self.node_coords,
-                                                self.source_coords,
-                                                self.activations,
-                                                eta)
+    def update_coeff_map(self):
+        """ Motivation: Want to precalculate all g(d_im) terms
+            Since phi(x) = -phi(-x) per properties of logistic fs,
+            then phi(-x) = -phi(x)
+            Since one of two nm_inputs is expected to be 0,
+            and said nm_inputs are either -1, 0, or 1,
+            one can thus simplify the calculation of m:
+            m = phi(a_s g(d_is) + a_w g(d_iw))
+              = phi(a_s g(d_is)) or phi(a_w g(d_iw))
+              = a_s phi(g(d_is)) or a_w phi(g(d_iw))
+            Thus, this method constructs a coefficient map
+            consisting of all possible values of abs(m)
+        """
+        coeff_map = [np.zeros((len(self.source_coords),
+                               self.node_coords[i].shape[0]
+                               ), dtype=np.float64)
+                     for i in range(len(self.node_coords))]
+        for i in range(len(self.node_coords)):
+            for j in range(self.source_coords.shape[0]):
+                for k in range(self.node_coords[i].shape[0]):
+                    coeff_map[i][j, k] = phi(g(np.linalg.norm(
+                        self.node_coords[i][k]-self.source_coords[j])))
+        self.coeff_map_summer = [cm[0] for cm in coeff_map]
+        self.coeff_map_winter = [cm[1] for cm in coeff_map]
 
     def convert_activations(self):
         for i in range(len(self.activations)):
@@ -179,7 +233,17 @@ class Network():
         for i in range(len(self.weights)):
             self.weights[i] = np.asarray(self.weights[i])
 
-    def reset_weights(self):
+    def store_original_weights(self):
+        self.original_weights = [w.copy() for w in self.weights]
+
+    def load_original_weights(self):
+        self.weights = [w.copy() for w in self.original_weights]
+
+    def reset_activations(self):
+        for i in range(len(self.activations)):
+            self.activations[i][:] = 0
+
+    def randomize_weights(self):
         for i in range(len(self.weights)):
             randoms = np.random.rand(*self.weights[i].shape)
             randoms[self.weights[i] == 0] = 0
@@ -191,7 +255,10 @@ class Network():
         ])/sum([w.size for w in self.weights])
 
     def copy(self):
-        clone = Network(self.node_coords, self.source_coords)
+        clone = Network(self.node_coords, self.source_coords,
+                        _update_cm=False)
+        clone.coeff_map_summer = self.coeff_map_summer
+        clone.coeff_map_winter = self.coeff_map_winter
         clone.weights = [w.copy() for w in self.weights]
         clone.biases = [b.copy() for b in self.biases]
         clone.activations = [a.copy() for a in self.activations]
@@ -208,7 +275,7 @@ class Network():
             p_reassign (float): The probability of reassigning a connection's
                 source or target from one neuron to another.
                 Defaults to 0.15 (15%).
-            p_biaschange (float): The prbability of changing the bias of a
+            p_biaschange (float): The probability of changing the bias of a
                 neuron.
                 Defaults to 0.10 (10%).
             p_weightchange (float): The probability of changing the weight of a
@@ -223,26 +290,34 @@ class Network():
         Returns:
             None.
         """
+        # add a connection (i.e. overwrite existing, add if 0)
+        if np.random.rand() < p_toggle:
+            layer = self.weights[np.random.randint(0, len(self.weights))]
+            i = np.random.randint(0, layer.shape[0])
+            j = np.random.randint(0, layer.shape[1])
+            layer[i, j] = np.random.rand()*2-1
+        # delete a connection
+        if np.random.rand() < p_toggle:
+            layer = self.weights[np.random.randint(0, len(self.weights))]
+            i = np.random.randint(0, layer.shape[0])
+            j = np.random.randint(0, layer.shape[1])
+            layer[i, j] = 0
+        # mutate weights and reassign weights
         n = sum([np.count_nonzero(weights) for weights in self.weights])
         if p_weightchange == -1:
             p_weightchange = 2/n
-        layer = self.weights[np.random.randint(0, len(self.weights))]
-        i = np.random.randint(0, layer.shape[0])
-        j = np.random.randint(0, layer.shape[1])
-        if np.random.rand() < p_toggle:
-            if layer[i, j] != 0:
-                layer[i, j] = 0
-            else:
-                layer[i, j] = np.random.rand()*2-1
         for i in range(len(self.weights)):
-            self.weights[i] = utils.mutate(
+            self.weights[i] = _mutate(
                 self.weights[i], p_weightchange, p_reassign)
+        # nudge positions of neurons
         for layer in self.node_coords:
             for i in range(len(layer)):
                 if np.random.rand() < p_nudge:
-                    layer[i] = [x + polynomial_mutation(0, -1, 1, 20)
+                    layer[i] = [x + polynomial_mutation(0, 1e-3, 1, 15)
                                 for x in layer[i]]
+                    self.update_coeff_map()
+        # mutate biases
         for layer in self.biases:
             for i in range(layer.shape[0]):
                 if np.random.rand() < p_biaschange:
-                    layer[i] = polynomial_mutation(layer[i], -1, 1, 20)
+                    layer[i] = polynomial_mutation(layer[i], 1e-3, 1, 15)

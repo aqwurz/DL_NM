@@ -7,12 +7,17 @@ cimport numpy as cnp
 from libc cimport math
 
 
+cdef float sigma = 0.5
+cdef float a = math.exp(-2)/math.sqrt(
+    2*sigma*sigma*math.pi
+)
+
 @cython.boundscheck(False)
 @cython.wraparound(False)
 @cython.nonecheck(False)
 @cython.cdivision(True)
 cdef inline float phi(float x):
-    return 2/(1 + math.exp(-32*x)) - 1
+    return 2/(1 + math.exp(-30*x)) - 1
 
 
 @cython.boundscheck(False)
@@ -20,12 +25,9 @@ cdef inline float phi(float x):
 @cython.nonecheck(False)
 @cython.cdivision(True)
 cdef inline float g(float x):
-    cdef float sigma = 0.5
     if x > 1.5:
         return 0
-    return math.exp(-2)/math.sqrt(
-        2*sigma*sigma*math.pi)*math.exp(
-            -x**2/(2*sigma*sigma))
+    return a*math.exp((-x**2)/(2*sigma*sigma))
 
 
 @cython.boundscheck(False)
@@ -34,7 +36,7 @@ cdef inline float g(float x):
 cdef cnp.float64_t[::1] forward_partial(cnp.float64_t[:,::1] weights,
                                         cnp.float64_t[::1] activations,
                                         cnp.float64_t[::1] biases):
-    cdef cnp.float64_t[::1] result = np.empty(weights.shape[0])
+    cdef cnp.float64_t[::1] result = np.zeros(weights.shape[0])
     cdef Py_ssize_t i, j
     for i in range(weights.shape[0]):
         for j in range(weights.shape[1]):
@@ -47,8 +49,8 @@ cdef cnp.float64_t[::1] forward_partial(cnp.float64_t[:,::1] weights,
 @cython.nonecheck(False)
 def forward(cnp.float64_t[::1] inputs,
             list weights,
-            list activations,
             list biases):
+    cdef list activations = [0]*(len(weights)+1)
     activations[0] = inputs
     cdef Py_ssize_t i
     cdef int w_size = len(weights)
@@ -74,46 +76,67 @@ cpdef float polynomial_mutation(float x, float lower, float upper, int eta):
     Returns:
         float: The mutated value.
     """
+    """
     cdef float d1 = (x-lower)/(upper-lower)
     cdef float d2 = (upper-x)/(upper-lower)
     cdef float r = np.random.rand()
     cdef float dq
     if r <= 0.5:
-        dq = (2*r + (1-2*r)*(1-d1)**(eta+1))**(1/(eta+1))-1
+        dq = (2*r + (1-2*r)*((1-d1)**(eta+1)))**(1/(eta+1))-1
     else:
-        dq = 1 - (2*(1-r) + 2*(r-0.5)*(1-d2)**(eta+1))**(1/(eta+1))
+        dq = 1 - (2*(1-r) + 2*(r-0.5)*((1-d2)**(eta+1)))**(1/(eta+1))
     return x + dq*(upper-lower)
+    """
+    cdef float r = np.random.rand()
+    cdef float dq, out
+    if r < 0.5:
+        dq = (2*r)**(1/(eta+1)) - 1
+    else:
+        dq = 1 - (2*(1-r))**(1/(eta+1))
+    out = x + dq
+    if out < lower:
+        out = lower
+    elif out > upper:
+        out = upper
+    return out
 
 
 @cython.boundscheck(False)
 @cython.wraparound(False)
 @cython.nonecheck(False)
 @cython.cdivision(True)
-cdef cnp.float64_t[:,::1] update_weights(cnp.float64_t[::1] nm_inputs,
+cpdef cnp.float64_t[::1] calculate_m(cnp.float64_t[::1] nm_inputs,
+                                     cnp.float64_t[:,::1] coeff_map):
+    cdef cnp.float64_t[::1] m = np.zeros((coeff_map.shape[0],))
+    cdef Py_ssize_t i
+    for i in range(coeff_map.shape[0]):
+        for j in range(coeff_map.shape[1]):
+            m[i] += nm_inputs[j] * coeff_map[i][j]
+        m[i] = phi(m[i])
+    return m
+
+
+@cython.boundscheck(False)
+@cython.wraparound(False)
+@cython.nonecheck(False)
+@cython.cdivision(True)
+cdef cnp.float64_t[:,::1] update_weights(cnp.float64_t[::1] m_arr,
                                          cnp.float64_t[:,::1] weights,
-                                         cnp.float64_t[:,::1] next_node_coords,
-                                         cnp.float64_t[:,::1] source_coords,
                                          cnp.float64_t[::1] activations,
                                          cnp.float64_t[::1] next_activations,
                                          float eta):
-    cdef float predistsum, pre_phi, pre_sum
-    cdef Py_ssize_t i, j, k
+    cdef float m
+    cdef Py_ssize_t i, j
     for i in range(weights.shape[0]):
-        pre_phi = 0
-        for j in range(nm_inputs.shape[0]):
-            predistsum = 0
-            for k in range(source_coords.shape[1]):
-                pre_sum = source_coords[j][k] - next_node_coords[i][k]
-                predistsum += pre_sum * pre_sum
-            pre_phi += nm_inputs[j] * g(math.sqrt(predistsum))
-        m = phi(pre_phi)
-        for j in range(weights.shape[1]):
-            if weights[i][j] != 0:
-                weights[i][j] += eta * m * activations[j] * next_activations[i]
-                if weights[i][j] < -1:
-                    weights[i][j] = -1
-                elif weights[i][j] > 1:
-                    weights[i][j] = 1
+        m = m_arr[i]
+        if m > 1e-3 or m < -1e-3:
+            for j in range(weights.shape[1]):
+                if weights[i][j] != 0:
+                    weights[i][j] += eta * m * activations[j] * next_activations[i]
+                    if weights[i][j] < -1:
+                        weights[i][j] = -1
+                    elif weights[i][j] > 1:
+                        weights[i][j] = 1
     return weights
 
 
@@ -122,17 +145,15 @@ cdef cnp.float64_t[:,::1] update_weights(cnp.float64_t[::1] nm_inputs,
 @cython.nonecheck(False)
 def update_weights_all(cnp.float64_t[::1] nm_inputs,
                        list weights,
-                       list node_coords,
-                       cnp.float64_t[:,::1] source_coords,
+                       list coeff_map,
                        list activations,
                        float eta):
     cdef Py_ssize_t i
     cdef int w_size = len(weights)
     for i in range(w_size):
-        weights[i] = update_weights(nm_inputs,
+        m = calculate_m(nm_inputs, coeff_map[i+1])
+        weights[i] = update_weights(m,
                                     weights[i],
-                                    node_coords[i+1],
-                                    source_coords,
                                     activations[i],
                                     activations[i+1],
                                     eta)
@@ -142,20 +163,27 @@ def update_weights_all(cnp.float64_t[::1] nm_inputs,
 @cython.boundscheck(False)
 @cython.wraparound(False)
 @cython.nonecheck(False)
-def mutate(cnp.float64_t[:,::1] layer,
-                                float p_weightchange,
-                                float p_reassign):
-    cdef float temp
-    cdef int k
-    for i in range(layer.shape[0]):
-        for j in range(layer.shape[1]):
-            if np.random.rand() < p_weightchange \
-               and layer[i][j] != 0:
-                layer[i][j] = polynomial_mutation(
-                    layer[i][j], -1, 1, 20)
-            if np.random.rand() < p_reassign:
-                k = np.random.randint(0, layer.shape[1])
-                temp = layer[i][j]
-                layer[i][j] = layer[i][k]
-                layer[i][k] = temp
-    return np.asarray(layer)
+def present(cnp.float64_t[::1] inputs,
+            list ms,
+            list weights,
+            list activations,
+            list biases,
+            float eta,
+            int num_updates):
+    cdef Py_ssize_t i, _
+    activations[0] = inputs
+    cdef int a_size = len(activations)
+    cdef cnp.float64_t[::1] a
+    for _ in range(num_updates):
+        for i in range(1, a_size):
+            m = ms[i]
+            a = forward_partial(weights[i-1],
+                                activations[i-1],
+                                biases[i-1])
+            weights[i-1] = update_weights(m,
+                                          weights[i-1],
+                                          activations[i-1],
+                                          activations[i],
+                                          eta)
+            activations[i] = a
+    return (weights, activations)

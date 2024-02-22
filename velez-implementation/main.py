@@ -5,16 +5,17 @@ import os
 import cProfile
 
 from network import *
-from pnsga import pnsga, Environment, decode_food_id
+from pnsga import pnsga, Environment, decode_food_id, set_objective_value, \
+    clone_individual
 from multiprocessing import cpu_count, Pool
 
 
-def train(individual, iterations=30, lifetimes=4, season_length=5,
+def train(ind, iterations=30, lifetimes=4, season_length=5,
           num_foods=8, profile=False):
     """Performs the experiment on an individual.
 
     Args:
-        individual (dict): The dictionary representing the individual.
+        ind (dict): The dictionary representing the individual.
         iterations (int): How many days the environment lasts for.
             Defaults to 30.
         lifetimes (int): How many lifetimes to evaluate the individual for.
@@ -32,15 +33,13 @@ def train(individual, iterations=30, lifetimes=4, season_length=5,
     if profile:
         pr = cProfile.Profile()
         pr.enable()
-    network = individual['network']
-    scores = np.zeros((lifetimes,))
+    individual = clone_individual(ind)
     eat_vector = np.zeros((lifetimes*iterations*num_foods,), dtype=bool)
-    original_weights = [weights.copy() for weights in network.weights]
+    individual['network'].store_original_weights()
     food_count = 0
     good_count = 0
     bad_count = 0
     inputs = np.zeros((5,))
-    nm_inputs = np.zeros((2,), dtype=np.float64)
     for i in range(lifetimes):
         summer = False
         winter = True
@@ -49,46 +48,43 @@ def train(individual, iterations=30, lifetimes=4, season_length=5,
         env = individual['envs'][i]
         for j in range(iterations):
             if j % season_length == 0:
-                summer, winter = winter, summer
+                summer = not summer
+                winter = not winter
             for k in range(num_foods):
                 food_count += 1
                 food = env.presentation_order[j][k]
                 inputs[:3] = decode_food_id(food)
                 inputs[3] = 0
                 inputs[4] = 0
-                outputs = network.forward(inputs)
+                outputs = individual['network'].forward(inputs)
                 ate_summer = summer and outputs[0] > 0
                 ate_winter = winter and outputs[1] > 0
-                prev_summer = 0
-                prev_winter = 0
-                if ate_summer and food in env.foods_summer:
-                    prev_summer = 1
-                elif ate_summer:
-                    prev_summer = -1
-                if ate_winter and food in env.foods_winter:
-                    prev_winter = 1
-                elif ate_winter:
-                    prev_winter = -1
+                prev_summer = 1 if food in env.foods_summer else -1
+                prev_winter = 1 if food in env.foods_winter else -1
+                feedback_summer = prev_summer if ate_summer else 0
+                feedback_winter = prev_winter if ate_winter else 0
                 if ate_summer or ate_winter:
                     eat_vector[(i*iterations+j) * num_foods + k] = True
-                    if prev_summer >= 1 or prev_winter >= 1:
-                        good_count += 1
-                    elif prev_summer <= -1 or prev_winter <= -1:
-                        bad_count += 1
-                inputs[3] = prev_summer
-                inputs[4] = prev_winter
-                network.forward(inputs)
-                nm_inputs[0] = prev_summer
-                nm_inputs[1] = prev_winter
-                network.update_weights(nm_inputs)
-        scores[i] = 0.5 + (good_count - bad_count)/food_count
-        network.weights = original_weights
+                if feedback_summer > 0:
+                    good_count += 1
+                elif feedback_summer < 0:
+                    bad_count += 1
+                elif feedback_winter > 0:
+                    good_count += 1
+                elif feedback_winter < 0:
+                    bad_count += 1
+                inputs[3] = feedback_summer
+                inputs[4] = feedback_winter
+                individual['network'].update_weights(
+                    inputs,
+                    feedback_summer if summer else feedback_winter,
+                    summer
+                )
+        individual['network'].load_original_weights()
     individual['eat_vector'] = eat_vector
-    m = np.mean(scores)
-    individual['performance'] = m
-    individual['objective_values'][individual['mapping']['performance']] = m
+    fitness = 0.5 + (good_count - bad_count)/food_count
+    set_objective_value(individual, 'performance', fitness)
     individual['network'].convert_activations()
-    individual['network'].convert_weights()
     if profile:
         pr.disable()
         pr.print_stats(sort='tottime')
@@ -101,14 +97,16 @@ def _worker_wrapper(arg):
 
 
 if __name__ == '__main__':
-    from argparse import ArgumentParser
+    from argparse import ArgumentParser, ArgumentDefaultsHelpFormatter
     from datetime import date
     objectives = {
         "performance": 1.00,
         "behavioral_diversity": 1.00,
         "connection_cost_n": 0.75
     }
-    parser = ArgumentParser()
+    parser = ArgumentParser(
+        formatter_class=ArgumentDefaultsHelpFormatter
+    )
     parser.add_argument("--num-execs", "-e", type=int, default=1,
                         help="How many parallel executions to perform")
     parser.add_argument("--num-cores", "-c", type=int, default=cpu_count(),
@@ -116,26 +114,23 @@ if __name__ == '__main__':
                         (unused if --num-execs is passed)")
     parser.add_argument("--pop-size", "-p", type=int, default=400,
                         help="The number of individuals per generation")
+    parser.add_argument("--aleat", "-a", type=int, default=1,
+                        help="Population multiplier for initialization")
     parser.add_argument("--num-generations", "-g", type=int, default=20000,
                         help="The number of generations to run PNSGA for")
-    parser.add_argument("--num-selected", "-s", type=int, default=50,
-                        help="How many individuals to select in tournament \
-                        selection")
     parser.add_argument("--p-toggle", "-pt", type=float, default=0.20,
-                        help="Probability of toggling connection in mutation \
-                        (defaults to 20%%)")
+                        help="Probability of toggling connection in mutation")
     parser.add_argument("--p-reassign", "-pr", type=float, default=0.15,
                         help="Probability of switching two weights in \
-                        mutation (defaults to 15%%)")
+                        mutation")
     parser.add_argument("--p-biaschange", "-pb", type=float, default=0.10,
-                        help="Probability of changing bias in mutation \
-                        (defaults to 10%%)")
+                        help="Probability of changing bias in mutation")
     parser.add_argument("--p-weightchange", "-pw", type=float, default=-1,
                         help="Probability of changing weight in mutation \
-                        (defaults to 2/n)")
+                        (a value of -1 is resolved to 2/n)")
     parser.add_argument("--p-nudge", "-pn", type=float, default=0.00,
                         help="Probability of changing neuron position \
-                        in mutation (defaults to 0%%)")
+                        in mutation")
     parser.add_argument("--objectives", "-m", nargs="+",
                         default=["performance", "behavioral_diversity",
                                  "connection_cost_n"],
@@ -157,7 +152,7 @@ if __name__ == '__main__':
              args.pop_size,
              args.num_generations,
              -1,
-             args.num_selected,
+             args.aleat,
              args.p_toggle,
              args.p_reassign,
              args.p_biaschange,
@@ -174,8 +169,8 @@ if __name__ == '__main__':
               selected_objectives,
               pop_size=args.pop_size,
               num_generations=args.num_generations,
-              num_selected=args.num_selected,
               num_cores=args.num_cores,
+              aleat=args.aleat,
               p_nudge=args.p_nudge,
               outfile=f"logs/{current_date}_{args.outfile}.csv",
               only_max=args.only_max)

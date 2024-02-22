@@ -5,8 +5,13 @@ import pandas as pd
 import numpy as np
 
 sns.set_theme()
-x = np.linspace(0, 2000, 2000)
-y = (-0.087462*x-0.84)/(-0.09*x-1.2)
+
+x = range(20000)
+y = []
+with open('../../DBNM/PlotData/2017_01_29_Diff_Mod0_SeaF_PS_SIB_TO_CUT2_HOLE_RL05_PR75_Sig050_L/mmm001_2017-01-29_20_05_21_12391/modularity.dat',
+          'r') as f:
+    for _ in range(20000):
+        y.append(float(f.readline().split()[1]))
 sns.lineplot(x=x, y=y, errorbar=None)
 dfs = []
 for arg in argv[1:]:
@@ -26,7 +31,7 @@ for arg in argv[1:]:
         dfs.append(df)
 sns.lineplot(data=[
     np.mean([d.loc[i].max() for d in dfs])
-    for i in range(len(dfs[0]))], errorbar=None, linewidth=5)
+    for i in range(len(dfs[0]))], errorbar=None)
 #plt.legend(labels=["expected"]+argv[1:]+["mean"])
-plt.legend(labels=["expected", "mean"])
+plt.legend(labels=["expected", argv[1]])
 plt.show()

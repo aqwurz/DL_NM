@@ -5,12 +5,15 @@ from multiprocessing import cpu_count
 import cProfile
 import math
 from tqdm import tqdm
+import pickle
+from sys import argv
 
 from pnsga import fast_non_dominated_sort, \
     crowding_distance_assignment, crowded_compare, tournament_selection, \
     make_new_pop, execute, initialize_pop, mutate, \
     calculate_behavioral_diversity, pnsga, generation, \
-    dominates, new_generation, Environment
+    dominates, new_generation, Environment, decode_food_id, \
+    new_tournament_selection
 from network import phi, g
 from main import train
 
@@ -261,8 +264,8 @@ def generation_alt(R, objectives, pop_size,
 
 def test_full_run_neo(num_selected=50):
     pop_size = 400
-    num_generations = 200
-    num_cores = cpu_count()
+    num_generations = 1000
+    num_cores = 1
     trainer = train
     p_toggle = 0.20
     p_reassign = 0.15
@@ -291,16 +294,35 @@ def test_full_run_neo(num_selected=50):
                            p_weightchange=p_weightchange,
                            p_nudge=p_nudge,
                            )
-        plt.scatter(x=[ind['performance'] for ind in P],
-                    y=[ind['behavioral_diversity'] for ind in P],
-                    c=[ind['rank'] for ind in P],
-                    cmap='viridis_r',
-                    )
-        plt.axvline(x=np.mean([ind['performance'] for ind in P]))
-        ax = plt.gca()
-        ax.set_xlim(0,1)
-        ax.set_ylim(0,1)
-        plt.show()
+        #if i % 500 == 0 and i != 0:
+        if True:
+            parents = [ind for ind in P if 'parent' in ind and ind['parent']]
+            selecteds = [ind for ind in P if 'selected' in ind and ind['selected']]
+            others = [ind for ind in P if not ('parent' in ind and ind['parent']) \
+                      and not ('selected' in ind and ind['selected'])]
+            plt.scatter(x=[ind['performance'] for ind in parents],
+                        y=[ind['behavioral_diversity'] for ind in parents],
+                        marker='+',
+                        )
+            plt.scatter(x=[ind['performance'] for ind in selecteds],
+                        y=[ind['behavioral_diversity'] for ind in selecteds],
+                        marker='P',
+                        )
+            plt.scatter(x=[ind['performance'] for ind in others],
+                        y=[ind['behavioral_diversity'] for ind in others],
+                        s=5,
+                        )
+            plt.axvline(x=np.mean([ind['performance'] for ind in P]))
+            """
+            ax = plt.gca()
+            ax.set_xlim(0,1)
+            ax.set_ylim(0,1)
+            """
+            plt.show()
+            perfs = [ind['performance'] for ind in P]
+            behs = [ind['behavioral_diversity'] for ind in P]
+            print(min(perfs), max(perfs))
+            print(min(behs), max(behs))
 
 
 def profile(single_core=False, num_generations=20,
@@ -372,7 +394,33 @@ def profile_just_train():
     train(P[0], profile=True)
 
 
-profile(single_core=True, num_generations=10)
-#profile_just_train()
-#test_full_run_neo(num_selected=100)
-#test_nds()
+def inspect_eating(filename, index):
+    with open(filename, 'rb') as f:
+        pop = pickle.load(f)
+    for i in range(4):
+        env = pop[index]['envs'][i]
+        print("new env:", env.foods_summer, env.foods_winter)
+        for j in range(30):
+            pres = env.presentation_order[j]
+            print(sorted(
+                pres[pop[index]['eat_vector'][(i*30+j)*8:(i*30+j+1)*8]]
+            ))
+            if j % 5 == 0:
+                stuff = np.array([
+                    decode_food_id(food, env.switch) for food in pres
+                ])[pop[index]['eat_vector'][(i*30+j)*8:(i*30+j+1)*8]]
+                print(stuff)
+
+
+def get_population(fn):
+    with open(fn, 'rb') as f:
+        pop = pickle.load(f)
+    return pop
+
+
+if __name__ == '__main__':
+    profile(single_core=True, num_generations=10)
+    #profile_just_train()
+    #test_full_run_neo(num_selected=100)
+    #test_nds()
+    #inspect_eating(argv[1], int(argv[2]))
