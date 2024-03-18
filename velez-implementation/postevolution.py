@@ -1,16 +1,18 @@
 #!/usr/bin/env python3
 
-from glob import glob
-import sys
 import pickle
-import numpy as np
-from tqdm import tqdm
-from matplotlib import pyplot as plt
+import sys
+from glob import glob
 
-from pnsga import Environment, decode_food_id
+import numpy as np
+from matplotlib import pyplot as plt
+from tqdm import tqdm
+
+from environment import Environment, decode_food_id
 
 
 def plot_population(dirname):
+    """Helper function for plotting the population distribution."""
     R = []
     if "pickle" in dirname:
         with open(dirname, 'rb') as f:
@@ -26,8 +28,6 @@ def plot_population(dirname):
         y = [ind['behavioral_diversity'] for ind in Ri]
         c = [ind['rank'] for ind in Ri]
         plt.scatter(x=x, y=y, c=c, cmap='viridis_r')
-        #for (xi, yi, rank) in zip(x, y, c):
-        #    plt.text(xi, yi, rank, va='bottom', ha='center')
         plt.show()
 
 
@@ -203,7 +203,7 @@ def post_evolution_analysis(dirname, num_envs=80, iterations=30,
         print(f"Training fitness {ind['training_fitness']}")
         print(f"Testing fitness {ind['testing_fitness']}")
         print(f"Perfect {ind['perfect']}")
-        print(f"Retained% {ind['retained']/ind['known']}")
+        print(f"Retained% {ind['retained']/(ind['known']+0.0001)}")
         plt.plot(ind['fitness_over_lifetime'])
         plt.grid(axis='x', color='0.95')
         plt.show()
@@ -211,12 +211,12 @@ def post_evolution_analysis(dirname, num_envs=80, iterations=30,
     print(f"Mean training fitness: {np.mean([ind['training_fitness'] for ind in best_R])}")
     print(f"Mean testing fitness: {np.mean([ind['testing_fitness'] for ind in best_R])}")
     print(f"Mean Perfect: {np.mean([ind['perfect'] for ind in best_R])}")
-    print(f"Mean Retained%: {np.mean([ind['retained']/ind['known'] for ind in best_R])}")
+    print(f"Mean Retained%: {np.mean([ind['retained']/(ind['known']+0.0001) for ind in best_R])}")
     print()
     print(f"Max training fitness: {np.max([ind['training_fitness'] for ind in best_R])}")
     print(f"Max testing fitness: {np.max([ind['testing_fitness'] for ind in best_R])}")
     print(f"Max Perfect: {np.max([ind['perfect'] for ind in best_R])}")
-    print(f"Max Retained%: {np.max([ind['retained']/ind['known'] for ind in best_R])}")
+    print(f"Max Retained%: {np.max([ind['retained']/(ind['known']+0.0001) for ind in best_R])}")
 
 
 if __name__ == '__main__':

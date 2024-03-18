@@ -36,6 +36,16 @@ cdef inline float g(float x):
 cdef cnp.float64_t[::1] forward_partial(cnp.float64_t[:,::1] weights,
                                         cnp.float64_t[::1] activations,
                                         cnp.float64_t[::1] biases):
+    """Performs forward calculations for one layer.
+
+    Args:
+        weights (np.array): The weights to use.
+        activations (np.array): The inputs of the layer.
+        biases (np.array): The biases to use.
+
+    Returns:
+        np.array: The activations of the layer.
+    """
     cdef cnp.float64_t[::1] result = np.zeros(weights.shape[0])
     cdef Py_ssize_t i, j
     for i in range(weights.shape[0]):
@@ -50,6 +60,17 @@ cdef cnp.float64_t[::1] forward_partial(cnp.float64_t[:,::1] weights,
 def forward(cnp.float64_t[::1] inputs,
             list weights,
             list biases):
+    """Gives an output from the network based on the input.
+
+    Args:
+        inputs (np.array): The inputs to the network, with zeroed-out
+            feedback signals.
+        weights (list): The weights of the network.
+        biases (list): The biases of the network.
+
+    Returns:
+        list: The activations of the network.
+    """
     cdef list activations = [0]*(len(weights)+1)
     activations[0] = inputs
     cdef Py_ssize_t i
@@ -59,61 +80,6 @@ def forward(cnp.float64_t[::1] inputs,
                                            activations[i],
                                            biases[i])
     return activations
-
-@cython.boundscheck(False)
-@cython.wraparound(False)
-@cython.nonecheck(False)
-@cython.cdivision(True)
-cpdef float polynomial_mutation(float x, float lower, float upper, int eta):
-    """Adjusts the value of x in accordance with polynomial mutation.
-
-    Args:
-        x (float): The value to be mutated.
-        lower (float): The minimum value of x.
-        upper (float): The maximum value of x.
-        eta (int): The distribution index.
-
-    Returns:
-        float: The mutated value.
-    """
-    """
-    cdef float d1 = (x-lower)/(upper-lower)
-    cdef float d2 = (upper-x)/(upper-lower)
-    cdef float r = np.random.rand()
-    cdef float dq
-    if r <= 0.5:
-        dq = (2*r + (1-2*r)*((1-d1)**(eta+1)))**(1/(eta+1))-1
-    else:
-        dq = 1 - (2*(1-r) + 2*(r-0.5)*((1-d2)**(eta+1)))**(1/(eta+1))
-    return x + dq*(upper-lower)
-    """
-    cdef float r = np.random.rand()
-    cdef float dq, out
-    if r < 0.5:
-        dq = (2*r)**(1/(eta+1)) - 1
-    else:
-        dq = 1 - (2*(1-r))**(1/(eta+1))
-    out = x + dq
-    if out < lower:
-        out = lower
-    elif out > upper:
-        out = upper
-    return out
-
-
-@cython.boundscheck(False)
-@cython.wraparound(False)
-@cython.nonecheck(False)
-@cython.cdivision(True)
-cpdef cnp.float64_t[::1] calculate_m(cnp.float64_t[::1] nm_inputs,
-                                     cnp.float64_t[:,::1] coeff_map):
-    cdef cnp.float64_t[::1] m = np.zeros((coeff_map.shape[0],))
-    cdef Py_ssize_t i
-    for i in range(coeff_map.shape[0]):
-        for j in range(coeff_map.shape[1]):
-            m[i] += nm_inputs[j] * coeff_map[i][j]
-        m[i] = phi(m[i])
-    return m
 
 
 @cython.boundscheck(False)
@@ -125,6 +91,20 @@ cdef cnp.float64_t[:,::1] update_weights(cnp.float64_t[::1] m_arr,
                                          cnp.float64_t[::1] activations,
                                          cnp.float64_t[::1] next_activations,
                                          float eta):
+    """Performs weight updates for one layer.
+
+    Args:
+        m_arr (np.array): An array of precalculated m values.
+        weights (np.array): The weights to update.
+        activations (np.array): The activations of the previous layer,
+            i.e. the inputs of this layer.
+        next_activations (np.array): The activations of the current layer,
+            i.e. the outputs of this layer.
+        eta (float): The learning rate.
+
+    Returns:
+        np.array: The updated weights.
+    """
     cdef float m
     cdef Py_ssize_t i, j
     for i in range(weights.shape[0]):
@@ -143,26 +123,6 @@ cdef cnp.float64_t[:,::1] update_weights(cnp.float64_t[::1] m_arr,
 @cython.boundscheck(False)
 @cython.wraparound(False)
 @cython.nonecheck(False)
-def update_weights_all(cnp.float64_t[::1] nm_inputs,
-                       list weights,
-                       list coeff_map,
-                       list activations,
-                       float eta):
-    cdef Py_ssize_t i
-    cdef int w_size = len(weights)
-    for i in range(w_size):
-        m = calculate_m(nm_inputs, coeff_map[i+1])
-        weights[i] = update_weights(m,
-                                    weights[i],
-                                    activations[i],
-                                    activations[i+1],
-                                    eta)
-    return weights
-
-
-@cython.boundscheck(False)
-@cython.wraparound(False)
-@cython.nonecheck(False)
 def present(cnp.float64_t[::1] inputs,
             list ms,
             list weights,
@@ -170,6 +130,23 @@ def present(cnp.float64_t[::1] inputs,
             list biases,
             float eta,
             int num_updates):
+    """Updates the weights of a network, facilitating learning.
+
+    Args:
+        inputs (np.array): The inputs to the network.
+        ms (list): Arrays of precalculated m values.
+        weights (list): The weights of the network.
+        activations (list): The activations of the network.
+        biases (list): The biases of the network.
+        eta (float): The learning rate.
+        num_updates (int): How many times to present the input and perform
+            the weight update calculations.
+
+    Returns:
+        np.array: The updated weights of the network.
+        np.array: The activations of the network calculated during weight
+            updating.
+    """
     cdef Py_ssize_t i, _
     activations[0] = inputs
     cdef int a_size = len(activations)

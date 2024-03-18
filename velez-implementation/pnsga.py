@@ -1,58 +1,18 @@
 #!/usr/bin/env python3
 
+import cProfile
 import functools
-import numpy as np
 from multiprocessing import Pool, cpu_count
-from tqdm import tqdm
 from pickle import dump
 from time import time
-import cProfile
+
 import numba
+import numpy as np
 from numba.typed import List as NBList
+from tqdm import tqdm
 
+from environment import Environment
 from network import Network
-
-
-class Environment():
-    def __init__(self):
-        food_ids = [
-            [7, 6, 5, 4],  # decision bit 0
-            [3, 2, 1, 0],  # decision bit 0
-            [6, 4, 2, 0],  # decision bit 2
-            [7, 5, 3, 1],  # decision bit 2
-            [7, 6, 3, 2],  # decision bit 1
-            [5, 4, 1, 0]   # decision bit 1
-        ]
-        self.foods_summer = np.array(food_ids[np.random.randint(0, 6)])
-        self.foods_winter = np.array(food_ids[np.random.randint(0, 6)])
-        self.presentation_order = np.array(
-            [[0, 1, 2, 3, 4, 5, 6, 7]]*30
-        )
-        [np.random.shuffle(day_order) for day_order in self.presentation_order]
-
-
-@numba.njit('i8[:](i8)')
-def decode_food_id(food_id):
-    """Translates an integer representation into a bit representation.
-
-    Args:
-        food_id (int): A 3-bit integer.
-        switch (bool): If the bits should be inverted, to prevent overfitting
-            on the values of the bits.
-
-    Returns:
-        np.array: The food as three bits.
-    """
-    out = -np.ones((3,), dtype=np.int64)
-    if food_id >= 4:
-        out[0] = 1
-        food_id -= 4
-    if food_id >= 2:
-        out[1] = 1
-        food_id -= 2
-    if food_id >= 1:
-        out[2] = 1
-    return out
 
 
 @numba.njit('b1(f8[:], f8[:])')
@@ -61,17 +21,13 @@ def dominates(i, j):
 
 
 def crowded_compare(i, j):
-    """Tests if i partially dominates j.
+    """Tests if i has a greater crowding distance than j.
 
     Args:
         i (dict): A solution.
         j (dict): A solution.
     Returns:
-        bool: if i <ndom j.
-    """
-    """
-    return (i['rank'] < j['rank']) \
-        or ((i['rank'] == j['rank']) and (i['distance'] > j['distance']))
+        bool: if the above-mentioned is true.
     """
     return i['distance'] > j['distance']
 
@@ -193,32 +149,6 @@ def initialize_pop(layer_config, source_config, objectives, trainer,
     return P
 
 
-def tournament_selection(P, objectives, num_selected=50):
-    """Performs tournament selection.
-        LEGACY CODE
-
-    Args:
-        P (list): The parent population as dicts.
-        num_selected (int): How many individuals to select.
-            Defaults to 50.
-    Returns:
-        list: The selected individuals as dicts.
-    """
-    selected = P.copy()
-    crowding_distance_assignment(selected, objectives)
-    while len(selected) > num_selected:
-        np.random.shuffle(selected)
-        i = 0
-        while i+1 < len(selected) and len(selected) > num_selected:
-            # if selected[i]['performance'] > selected[i+1]['performance']:
-            if crowded_compare(selected[i], selected[i+1]):
-                selected.pop(i+1)
-            else:  # necessary to guarantee termination
-                selected.pop(i)
-            i += 1
-    return selected
-
-
 def make_new_pop(P, objectives,
                  p_toggle=0.20, p_reassign=0.15,
                  p_biaschange=0.10, p_weightchange=-1,
@@ -331,7 +261,14 @@ def crowding_distance_assignment(individuals, objectives):
 
 
 def new_tournament_selection(P):
-    """TODO"""
+    """Performs tournament selection for mutation.
+
+    Args:
+        P (list): A list of parents as dictionaries.
+
+    Returns:
+        list: A list of children, prior to mutation.
+    """
     Q = [None] * len(P)
     indices_1 = np.arange(0, len(P))
     indices_2 = np.arange(0, len(P))
@@ -362,7 +299,18 @@ def new_tournament_selection(P):
 
 
 def non_dominated_sorting(R, objectives, N=400):
-    """TODO"""
+    """Performs survivor selection using non-dominated sorting, with extra
+        bookkeeping.
+
+    Args:
+        R (list): The population prior to selection.
+        objectives (dict): What objectives to use for NDS.
+        N (int): How many individuals to select.
+            Defaults to 400.
+
+    Returns:
+        list: The survivor population.
+    """
     ranks = fast_non_dominated_sort(
         np.array([ind['objective_values'] for ind in R]))
     F = [[]]*ranks.max()
@@ -390,7 +338,31 @@ def new_generation(P, objectives, trainer,
                    p_toggle=0.20, p_reassign=0.15,
                    p_biaschange=0.10, p_weightchange=-1,
                    p_nudge=0.00):
-    """TODO"""
+    """Performs one epoch of the PNSGA algorithm.
+
+    Args:
+        P (list): The population as dictionaries.
+        objectives (dict): A dictionary of objectives and their parameters.
+        trainer (func): The training function.
+        num_cores (int): How many cores to use for training.
+            Defaults to the number of cores given by
+            multiprocessing.cpu_count().
+        p_toggle (float): The probability of toggling a connection.
+            Defaults to 0.20 (20%).
+        p_reassign (float): The probability of reassigning a connection's
+            source or target from one neuron to another.
+            Defaults to 0.15 (15%).
+        p_biaschange (float): The prbability of changing the bias of a neuron.
+            Defaults to 0.10 (10%).
+        p_weightchange (float): The probability of changing the weight of a
+            connection.
+            If -1, sets the probability to 2/n, n being the number of
+            connections in the whole network.
+            Defaults to -1.
+        p_nudge (float): The probablility of adjusting the position of a
+            neuron.
+            Defaults to 0.00 (0%).
+    """
     chosen_objectives = {}
     for obj in objectives.keys():
         p_obj = objectives[obj]
@@ -422,78 +394,6 @@ def new_generation(P, objectives, trainer,
         calculate_behavioral_diversity(R)
     # NDS
     return non_dominated_sorting(R, chosen_objectives)
-
-
-def generation(R, objectives, pop_size,
-               num_selected=50,
-               p_toggle=0.20, p_reassign=0.15,
-               p_biaschange=0.10, p_weightchange=-1,
-               p_nudge=0.00):
-    """Performs an iteration of PNGSA.
-        LEGACY CODE
-
-    Args:
-        R (list): A list of parent and child solutions.
-        objectives (dict): A dictionary of objectives and their parameters.
-        pop_size (int): The intended size of each population.
-        num_selected (int): How many individuals to select in tournament
-            selection.
-            Defaults to 50.
-        p_toggle (float): The probability of toggling a connection.
-            Defaults to 0.20 (20%).
-        p_reassign (float): The probability of reassigning a connection's
-            source or target from one neuron to another.
-            Defaults to 0.15 (15%).
-        p_biaschange (float): The prbability of changing the bias of a neuron.
-            Defaults to 0.10 (10%).
-        p_weightchange (float): The probability of changing the weight of a
-            connection.
-            If -1, sets the probability to 2/n, n being the number of
-            connections in the whole network.
-            Defaults to -1.
-        p_nudge (float): The probablility of adjusting the position of a
-            neuron.
-            Defaults to 0.00 (0%).
-
-    Returns:
-        list: The new parents.
-        list: The new children.
-    """
-    chosen_objectives = {}
-    for obj in objectives.keys():
-        p_obj = objectives[obj]
-        if np.random.rand() <= p_obj:
-            chosen_objectives[obj] = objectives[obj]
-    N = pop_size//2
-    ranks = fast_non_dominated_sort(
-        np.array([ind['objective_values'] for ind in R]))
-    F = [[]]*ranks.max()
-    for i in range(len(R)):
-        R[i]['rank'] = ranks[i]
-    for i in range(ranks.max()):
-        F[i] = [R[j] for j in range(len(R)) if (ranks == i+1)[j]]
-    P_new = []
-    i = 0
-    while i < len(F) and len(P_new) + len(F[i]) < N:
-        # crowding_distance_assignment(F[i], chosen_objectives)
-        P_new += F[i]
-        i += 1
-    if i >= len(F):
-        i = len(F) - 1
-    crowding_distance_assignment(F[i], chosen_objectives)
-    F[i].sort(key=functools.cmp_to_key(
-        lambda i, j: (1 if crowded_compare(i, j) else -1)),
-        reverse=True)
-    P_new += F[i][0:(N-len(P_new))]
-    Q_new = make_new_pop(P_new, objectives,
-                         p_toggle=p_toggle,
-                         p_reassign=p_reassign,
-                         p_biaschange=p_biaschange,
-                         p_weightchange=p_weightchange,
-                         p_nudge=p_nudge,
-                         )
-
-    return P_new, Q_new
 
 
 @numba.njit('f8[:](b1[:,:])', nogil=True, parallel=True)
@@ -544,7 +444,7 @@ def write_to_file(R, fn, eol=True, only_max=False):
 
 
 def execute(R, trainer, num_cores, outfile, eol=True, only_max=False):
-    """Trains individuals and writes fitnesses to a file.
+    """Trains individuals and optionally writes fitnesses to a file.
 
     Args:
         R (list): A list of individuals as dictionaries.

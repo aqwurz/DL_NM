@@ -9,4 +9,3 @@ cdef cnp.float64_t[:,::1] update_weights(cnp.float64_t[::1] m,
                                          cnp.float64_t[::1] activations,
                                          cnp.float64_t[::1] next_activations,
                                          float eta)
-cdef cnp.float64_t[::1] calculate_m(cnp.float64_t[::1] nm_inputs, cnp.float64_t[:,::1] coeff_map)

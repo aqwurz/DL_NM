@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 
-import numpy as np
-import os
 import cProfile
+import os
+from multiprocessing import Pool, cpu_count
 
-from network import *
-from pnsga import pnsga, Environment, decode_food_id, set_objective_value, \
-    clone_individual
-from multiprocessing import cpu_count, Pool
+import numpy as np
+
+from environment import decode_food_id
+from pnsga import clone_individual, pnsga, set_objective_value
 
 
 def train(ind, iterations=30, lifetimes=4, season_length=5,
@@ -19,11 +19,11 @@ def train(ind, iterations=30, lifetimes=4, season_length=5,
         iterations (int): How many days the environment lasts for.
             Defaults to 30.
         lifetimes (int): How many lifetimes to evaluate the individual for.
-            Defaults to 8.
+            Defaults to 4.
         season_length (int): How many days a season lasts for.
             Defaults to 5.
         num_foods (int): How many foods to include in each environment.
-            Defaults to 4.
+            Defaults to 8.
         profile (bool): Whether or not to do cProfile profiling.
             Defaults to False.
 
@@ -97,7 +97,7 @@ def _worker_wrapper(arg):
 
 
 if __name__ == '__main__':
-    from argparse import ArgumentParser, ArgumentDefaultsHelpFormatter
+    from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser
     from datetime import date
     objectives = {
         "performance": 1.00,
@@ -142,6 +142,7 @@ if __name__ == '__main__':
     args = parser.parse_args()
     selected_objectives = {m: objectives[m] for m in args.objectives}
     current_date = str(date.today()).replace("-", "")
+    outfile = f"logs/{current_date}_{args.outfile}.csv" if "/" not in args.outfile else f"logs/{args.outfile}.csv"
     if args.num_execs > 1:
         outfolder = f"logs/{current_date}_{args.outfile}"
         if not os.path.isdir(outfolder):
@@ -172,5 +173,5 @@ if __name__ == '__main__':
               num_cores=args.num_cores,
               aleat=args.aleat,
               p_nudge=args.p_nudge,
-              outfile=f"logs/{current_date}_{args.outfile}.csv",
+              outfile=outfile,
               only_max=args.only_max)

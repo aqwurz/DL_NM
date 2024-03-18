@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 
-import numpy as np
-import numba
 import math
+
+import numba
+import numpy as np
+
 import utils
 
 
@@ -47,51 +49,22 @@ def polynomial_mutation(x, lower, upper, eta):
     return out
 
 
-@numba.njit(
-    "f8[:,::1](f8[::1],f8[:,::1],f8[:,::1],f8[:,::1],f8[::1],f8[::1],f8)",
-    nogil=True)
-def _update_weights(nm_inputs, weights, next_node_coords, source_coords,
-                    activations, next_activations, eta):
-    """
-    M = np.zeros((1, weights.shape[0]))
-    distances = np.zeros((source_coords.shape[0],))
-    for j in range(weights.shape[0]):
-        for k in range(source_coords.shape[0]):
-            predist = source_coords[k]-next_node_coords[j]
-            predistsum = 0
-            for l in predist:
-                predistsum += l**2
-            distances[k] = g(math.sqrt(predistsum))
-        M[0, j] = phi(nm_inputs @ distances)
-    mask = weights == 0
-    weights += np.outer(next_activations, activations) * M.T * eta
-    for i in range(weights.shape[0]):
-        for j in range(weights.shape[1]):
-            if mask[i, j]:
-                weights[i, j] = 0
-    weights.clip(-1, 1, out=weights)
-    return weights
-    """
-    for i in range(weights.shape[0]):
-        pre_phi = 0
-        for j in range(nm_inputs.shape[0]):
-            pre_phi += nm_inputs[j] * g(math.hypot(
-                source_coords[j][0] - next_node_coords[i][0],
-                source_coords[j][1] - next_node_coords[i][1]
-            ))
-        m = phi(pre_phi)
-        for j in range(weights.shape[1]):
-            if weights[i][j] != 0:
-                weights[i][j] += eta * m * activations[j] * next_activations[i]
-                if weights[i][j] < -1:
-                    weights[i][j] = -1
-                elif weights[i][j] > 1:
-                    weights[i][j] = 1
-    return weights
-
-
 @numba.njit('f8[:,::1](f8[:,::1], f8, f8)', nogil=True)
 def _mutate(layer, p_weightchange, p_reassign):
+    """Internal function that performs weight alteration and reassignment.
+
+    Separated for Numba acceleration purposes.
+
+    Args:
+        layer (np.array): The weight layer to mutate.
+        p_weightchange (float): The probability of changing the weight of a
+            connection.
+        p_reassign (float): The probability of reassigning a connection's
+            source or target from one neuron to another.
+
+    Returns:
+        np.array: The mutated layer.
+    """
     for i in range(layer.shape[0]):
         for j in range(layer.shape[1]):
             if np.random.rand() < p_weightchange \
@@ -104,12 +77,12 @@ def _mutate(layer, p_weightchange, p_reassign):
                 if np.random.rand() < 0.5:
                     k = np.random.randint(0, layer.shape[1])
                     temp = layer[i, j]
-                    layer[i, j] = 0  # layer[i, k]
+                    layer[i, j] = 0
                     layer[i, k] = temp
                 else:
                     k = np.random.randint(0, layer.shape[0])
                     temp = layer[i, j]
-                    layer[i, j] = 0  # layer[k, j]
+                    layer[i, j] = 0
                     layer[k, j] = temp
                 return layer
 
@@ -118,17 +91,7 @@ def _mutate(layer, p_weightchange, p_reassign):
 
 class Network():
     """
-    TODO:
-    - Document this
-    - Refactor to use arrays instead of classes
-        - null connection as weight=0
-        - swap connections by swapping weights
-        - weight array: [layers, nodes, weights]
-        - bias array: [layers, nodes]
-        - coordinate array: layer_config
-        - source array: [sources]
-        - source coord array: source_config
-    - Add functionality for mutating coordinates
+    Class representing a neural network as described in Velez's experiment.
     """
 
     def __init__(self, layer_config, source_config, _update_cm=True):
@@ -172,14 +135,41 @@ class Network():
             self.update_coeff_map()
 
     def __eq__(self, other):
+        """Magic method that enables identity comparison with other Network
+            instances.
+
+        Args:
+            other (Network): The network to compare with.
+
+        Returns:
+            bool: If the network is identical to the other network.
+        """
         for i in range(len(self.node_coords)-1):
-            if np.all(self.weights[i] == other.weights[i]):
-                return True
-            if np.all(self.biases[i] == other.biases[i]):
-                return True
-        return False
+            if np.any(self.weights[i] != other.weights[i]):
+                return False
+            if np.any(self.biases[i] != other.biases[i]):
+                return False
+        return True
 
     def update_weights(self, inputs, feedback, summer, eta=0.002, num_updates=5):
+        """Updates the weights of the network, facilitating learning.
+
+        Args:
+            inputs (np.array): The inputs to the network, with feedback signals.
+            feedback (int): The value of the feedback given for the current
+                season.
+                Assumes that only one seasonal feedback is given at a time.
+            summer (bool): Whether or not the feedback value is tied to the
+                summer season.
+            eta (float): The learning rate.
+                Defaults to 0.002.
+            num_updates (int): How many times to present the input and perform
+                the weight update calculations.
+                Defaults to 5.
+
+        Returns:
+            None.
+        """
         if feedback != 0:
             coeff_map = self.coeff_map_summer if summer else self.coeff_map_winter
             if feedback < 0:
@@ -195,15 +185,24 @@ class Network():
             self.activations = a
 
     def forward(self, inputs):
+        """Gives an output from the network based on an input.
+
+        Args:
+            inputs (np.array): The inputs to the network, with zeroed-out
+                feedback signals.
+
+        Returns:
+            np.array: The output layer activations.
+        """
         self.activations = utils.forward(inputs,
                                          self.weights,
                                          self.biases)
         return self.activations[-1]
 
     def update_coeff_map(self):
-        """ Motivation: Want to precalculate all g(d_im) terms
+        """Motivation: Want to precalculate all g(d_im) terms
             Since phi(x) = -phi(-x) per properties of logistic fs,
-            then phi(-x) = -phi(x)
+            then phi(-x) = -phi(x).
             Since one of two nm_inputs is expected to be 0,
             and said nm_inputs are either -1, 0, or 1,
             one can thus simplify the calculation of m:
@@ -212,6 +211,12 @@ class Network():
               = a_s phi(g(d_is)) or a_w phi(g(d_iw))
             Thus, this method constructs a coefficient map
             consisting of all possible values of abs(m)
+
+        Args:
+            None.
+
+        Returns:
+            None.
         """
         coeff_map = [np.zeros((len(self.source_coords),
                                self.node_coords[i].shape[0]
@@ -226,35 +231,115 @@ class Network():
         self.coeff_map_winter = [cm[1] for cm in coeff_map]
 
     def convert_activations(self):
+        """Retypes the activation arrays from Cython typed memoryviews to
+            Numpy arrays.
+
+        Necessary to allow pickling.
+
+        Args:
+            None.
+
+        Returns:
+            None.
+        """
         for i in range(len(self.activations)):
             self.activations[i] = np.asarray(self.activations[i])
 
     def convert_weights(self):
+        """Retypes the activation arrays from Cython typed memoryviews to
+            Numpy arrays.
+
+        Necessary to allow pickling, but made redundant by the handling of
+            weights in the training phase.
+
+        Args:
+            None.
+
+        Returns:
+            None.
+        """
         for i in range(len(self.weights)):
             self.weights[i] = np.asarray(self.weights[i])
 
     def store_original_weights(self):
+        """Creates a backup copy of the weights prior to training.
+            Necessary to avoid irregular behaviour.
+
+        Args:
+            None.
+
+        Returns:
+            None.
+        """
         self.original_weights = [w.copy() for w in self.weights]
 
     def load_original_weights(self):
+        """Restores the original weights from a backup copy after training.
+            Necessary to avoid irregular behaviour.
+
+        Args:
+            None.
+
+        Returns:
+            None.
+        """
         self.weights = [w.copy() for w in self.original_weights]
 
     def reset_activations(self):
+        """Extra method that resets all activations to zero.
+
+        Not used in the main experiments.
+
+        Args:
+            None.
+
+        Returns:
+            None.
+        """
         for i in range(len(self.activations)):
             self.activations[i][:] = 0
 
     def randomize_weights(self):
+        """Extra method that resets all weights to random values.
+
+        Not used in the main experiments.
+
+        Args:
+            None.
+
+        Returns:
+            None.
+        """
         for i in range(len(self.weights)):
             randoms = np.random.rand(*self.weights[i].shape)
             randoms[self.weights[i] == 0] = 0
             self.weights[i] = randoms
 
     def connection_cost(self):
+        """Calculates the connection cost objective for PNGSA.
+
+        Args:
+            None.
+
+        Returns:
+            float: A value between 0 and 1, where 0 indicates a fully connected
+                network, while 1 indicates a completely disconnected network.
+                Values have been chosen to encourage sparse connections.
+        """
         return 1 - sum([
             np.count_nonzero(w) for w in self.weights
         ])/sum([w.size for w in self.weights])
 
     def copy(self):
+        """Clones the Network instance for e.g. mutation.
+
+        Args:
+            None.
+
+        Returns:
+            Network: A distinct Network instance with the same values as its
+                parent.
+        """
         clone = Network(self.node_coords, self.source_coords,
                         _update_cm=False)
         clone.coeff_map_summer = self.coeff_map_summer
