@@ -7,7 +7,8 @@ import seaborn as sns
 from matplotlib import pyplot as plt
 
 sns.set_theme()
-sns.set_palette(['#2c7fb8', '#7fcdbb', '#edf8b1'])
+#sns.set_palette(['#2c7fb8', '#7fcdbb', '#edf8b1'])
+sns.set_palette(['#1b9e77', '#7570b3', '#d95f02', '#000000'])
 
 x = range(20000)
 y = []

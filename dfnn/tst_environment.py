@@ -29,6 +29,7 @@ class TstEnvironment(MiniGridEnv):
                  update_all_seen=False,
                  double_channel=False,
                  annotate=False,
+                 eval_name=None,
                  **kwargs):
         self.agent_start_pos = agent_start_pos
         self.agent_start_dir = agent_start_dir
@@ -51,6 +52,11 @@ class TstEnvironment(MiniGridEnv):
         self.update_all_seen = update_all_seen
         self.double_channel = double_channel
         self.annotate = annotate
+        self.eval_name = eval_name
+        self.non_timeout_count = 0
+        self.goal_count = 0
+        self.step_success_count = 0
+        self.variable_tile_count = 0
 
     @staticmethod
     def _gen_mission():
@@ -139,9 +145,16 @@ class TstEnvironment(MiniGridEnv):
             if fwd_cell is not None and fwd_cell.type == "goal":
                 terminated = True
                 reward = self._reward()
+                self.goal_count += 1
+                self.non_timeout_count += 1
+                self.step_success_count += self.step_count
             if fwd_cell is not None and fwd_cell.is_hazardous \
                and fwd_cell.type != "wall":
                 terminated = True
+                self.non_timeout_count += 1
+            if fwd_cell.type in ["water", "mud", "slope", "hill"] \
+               and not terminated:
+                self.variable_tile_count += 1
 
         # Pick up an object
         elif action == self.actions.pickup:
@@ -215,7 +228,8 @@ class TstEnvironment(MiniGridEnv):
                             or (not self.summer and output[1])
                         if not marked_as_safe:
                             feedback = 0
-                        elif vis_mask[i, j] and raw_cells_seen.grid.get(i, j).is_hazardous:
+                        elif (vis_mask[i, j] and raw_cells_seen.get(i, j) is not None) \
+                             and raw_cells_seen.get(i, j).is_hazardous:
                             feedback = -1
                         else:
                             feedback = 1
@@ -387,6 +401,6 @@ def random_interpolation(w, h, seed=None):
 if __name__ == '__main__':
     from minigrid.manual_control import ManualControl
 
-    env = TstEnvironment(render_mode="human", size=12)
+    env = TstEnvironment(render_mode="human", size=10)
     manual_control = ManualControl(env, seed=2024)
     manual_control.start()
