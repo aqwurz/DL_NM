@@ -46,7 +46,109 @@ def dir_to_name(dir):
     return name
 
 
-if __name__ == '__main__':
+def training_comparer():
+    sns.set_theme()
+    sns.set_palette(['#1b9e77', '#d95f02', '#7570b3', '#000000'])
+    dirs = [
+        'fox_ppo_pretrain_annotate_double_1712401463',
+        'fox_ppo_pretrain_annotate_single_1712401078',
+        'fox_ppo_pretrain_double_1712464516',
+        'fox_ppo_pretrain_single_1712401541',
+        'fox_ppo_update_all_annotate_double_1712581267',
+        'fox_ppo_update_all_annotate_single_1712580285',
+        'fox_ppo_update_all_double_1712580146',
+        'fox_ppo_update_all_single_1712580285',
+        'fox_ppo_update_one_annotate_double_1712401471',
+        'fox_ppo_update_one_annotate_single_1712401351',
+        'fox_ppo_update_one_double_1712465135',
+        'fox_ppo_update_one_single_1712401564',
+    ]
+    data = {
+        'Annotated double': {'Pretrained': None, 'Trained on FOV': None, 'Trained on next tile': None},
+        'Annotated single': {'Pretrained': None, 'Trained on FOV': None, 'Trained on next tile': None},
+        'Raw double': {'Pretrained': None, 'Trained on FOV': None, 'Trained on next tile': None},
+        'Raw single': {'Pretrained': None, 'Trained on FOV': None, 'Trained on next tile': None},
+    }
+    for dir in dirs:
+        ds = []
+        final_values = []
+        for i in range(50):
+            r = SummaryReader(f"logs/tensorboard/{dir}/{i:03}_1", pivot=True)
+            raw_ds = r.scalars[['step', 'rollout/ep_rew_mean']]
+            final_values.append(raw_ds.iloc[-1]['rollout/ep_rew_mean'])
+            ds.append(raw_ds)
+        df = pd.DataFrame(pd.concat(ds))
+        df['name'] = dir_to_name(dir)
+        if 'annotate_double' in dir:
+            selected_data = data['Annotated double']
+            df['Channel mode'] = 'Annotated double'
+        elif 'annotate_single' in dir:
+            selected_data = data['Annotated single']
+            df['Channel mode'] = 'Annotated single'
+        elif 'double' in dir:
+            selected_data = data['Raw double']
+            df['Channel mode'] = 'Raw double'
+        elif 'single' in dir:
+            selected_data = data['Raw single']
+            df['Channel mode'] = 'Raw single'
+        if 'pretrain' in dir:
+            df['Training mode'] = 'Pretrained'
+            selected_data['Pretrained'] = df
+        elif 'update_all' in dir:
+            df['Training mode'] = 'Trained on FOV'
+            selected_data['Trained on FOV'] = df
+        elif 'update_one' in dir:
+            df['Training mode'] = 'Trained on next tile'
+            selected_data['Trained on next tile'] = df
+
+    df_sig_combined_list = []
+    for channel_mode, value in data.items():
+        for pair in [
+            ['Pretrained', 'Trained on FOV'],
+            ['Pretrained', 'Trained on next tile'],
+            ['Trained on FOV', 'Trained on next tile']
+        ]:
+            df1 = value[pair[0]]
+            df2 = value[pair[1]]
+            significant_steps = []
+            for i in range(2048, 500000, 2048):
+                _, p = mannwhitneyu(
+                    df1.loc[df1['step'] == i]['rollout/ep_rew_mean'],
+                    df2.loc[df2['step'] == i]['rollout/ep_rew_mean'],
+                    alternative='greater'
+                )
+                pt = 0.001
+                if p < pt:
+                    significant_steps.append(i)
+            df_sig = pd.DataFrame(data={'step': significant_steps})
+            df_sig['Channel mode'] = channel_mode
+            df_sig['Comparison'] = f"{pair[0]} -- {pair[1]}"
+            df_sig_combined_list.append(df_sig)
+    df_sig_combined = pd.concat(df_sig_combined_list, ignore_index=True)
+    print(df_sig_combined)
+    fig, ax = plt.subplots(figsize=(12, 5))
+    g = sns.stripplot(data=df_sig_combined,
+                      x='step',
+                      y='Channel mode',
+                      hue="Comparison",
+                      marker="s",
+                      edgecolor=None,
+                      dodge=True,
+                      jitter=False,
+                      ax=ax)
+    sns.move_legend(g, "upper left", bbox_to_anchor=(1, 1))
+    sns.move_legend(
+        g, "lower center",
+        bbox_to_anchor=(.5, 1), ncol=3, title=None, frameon=False,
+    )
+    plt.tight_layout()
+    plt.show()
+
+
+def main_plotter(dqn=False,
+                 flat=False,
+                 many_plots=True,
+                 stat_analysis=False):
     sns.set_theme()
     # sns.set_palette(['#b2df8a', '#1f78b4', '#a6cee3', '#000000'])
     sns.set_palette(['#1b9e77', '#d95f02', '#7570b3', '#000000'])
