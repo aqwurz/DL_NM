@@ -265,15 +265,11 @@ def main_plotter(dqn=False,
                         _, p1 = mannwhitneyu(
                                         per_dir.loc[per_dir['step'] == i]['closest_rew_mean'],
                                         nodfnn_double.loc[nodfnn_double['step'] == i]['closest_rew_mean'],
-                                        #per_dir.loc[(per_dir['step'] - i).abs().idxmin()]['rollout/ep_rew_mean'],
-                                        #nodfnn_double.loc[(nodfnn_double['step'] - i).abs().idxmin()]['rollout/ep_rew_mean'],
                                         alternative='greater'
                                         )
                         _, p2 = mannwhitneyu(
                                         per_dir.loc[per_dir['step'] == i]['closest_rew_mean'],
                                         nodfnn_single.loc[nodfnn_single['step'] == i]['closest_rew_mean'],
-                                        #per_dir.loc[(per_dir['step'] - i).abs().idxmin()]['rollout/ep_rew_mean'],
-                                        #nodfnn_single.loc[(nodfnn_single['step'] - i).abs().idxmin()]['rollout/ep_rew_mean'],
                                         alternative='greater'
                                         )
                         pt = 0.001
@@ -309,12 +305,12 @@ def main_plotter(dqn=False,
         else:
             fig, ax = plt.subplots(figsize=(10, 3) if flat else (10, 7))
             l = sns.lineplot(data=combined,
-                            x='step',
-                            y='closest_rew_mean' if dqn else 'rollout/ep_rew_mean',
-                            hue='Training mode',
-                            style='Channel mode',
-                            ax=ax,
-                            )
+                             x='step',
+                             y='closest_rew_mean' if dqn else 'rollout/ep_rew_mean',
+                             hue='Training mode',
+                             style='Channel mode',
+                             ax=ax,
+                             )
             plt.title(channel_modes[c])
             #ax = plt.gca()
             if dqn:
@@ -332,3 +328,8 @@ def main_plotter(dqn=False,
                 plt.tight_layout()
             plt.show()
             c += 1
+
+
+if __name__ == '__main__':
+    #main_plotter()
+    training_comparer()
